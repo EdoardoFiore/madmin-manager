@@ -162,7 +162,10 @@ function setLoading(btn, loading, loadingKey, defaultKey) {
     }
 }
 
+const loginCard = document.querySelector('.login-card');
+
 function showLoginForm() {
+    loginCard.classList.remove('login-card-wide');
     form.classList.remove('d-none');
     twoFaSection.classList.add('d-none');
     pwdChangeSection.classList.add('d-none');
@@ -172,6 +175,7 @@ function showLoginForm() {
 }
 
 function show2faForm() {
+    loginCard.classList.remove('login-card-wide');
     form.classList.add('d-none');
     pwdChangeSection.classList.add('d-none');
     twoFaSetupSection.classList.add('d-none');
@@ -182,6 +186,7 @@ function show2faForm() {
 }
 
 function showPwdChangeForm() {
+    loginCard.classList.remove('login-card-wide');
     form.classList.add('d-none');
     twoFaSection.classList.add('d-none');
     twoFaSetupSection.classList.add('d-none');
@@ -193,6 +198,7 @@ function showPwdChangeForm() {
 }
 
 function show2faSetupForm() {
+    loginCard.classList.add('login-card-wide');
     form.classList.add('d-none');
     twoFaSection.classList.add('d-none');
     pwdChangeSection.classList.add('d-none');

@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.3.2] - 2026-11-14
+
+### Fixed
+- Forced 2FA setup at login: the page was cut at the top when taller than the window; now a wider card in three numbered steps (scan, save the backup codes, enter the code), with a text that fits superusers too.
+
 ## [1.3.1] - 2026-11-14
 
 ### Fixed
