@@ -81,6 +81,10 @@ class User(SQLModel, table=True):
     totp_locked: bool = Field(default=False)    # Locked after too many failed 2FA attempts
     totp_last_step: Optional[int] = Field(default=None)  # TOTP time step last accepted (replay guard)
     backup_codes: Optional[str] = Field(default=None)  # JSON array of hashed backup codes
+    # Approves other users' SSH keys only from this time: set 24 h ahead when
+    # the account becomes a superuser, or when someone else resets its
+    # password or 2FA (manager.keys.APPROVAL_COOLDOWN). None = no wait.
+    key_approval_after: Optional[datetime] = Field(default=None)
 
     # Password lifecycle
     must_change_password: bool = Field(default=False)  # Force change at next login
@@ -104,6 +108,11 @@ class User(SQLModel, table=True):
     def is_superuser(self) -> bool:
         """Manager-wide scope (read only too: writing also needs can_write)."""
         return self.role == "superuser"
+
+    @property
+    def totp_required(self) -> bool:
+        """Superusers always need the 2FA; the others when an admin enforces it."""
+        return self.totp_enforced or self.is_superuser
 
     @property
     def can_write(self) -> bool:
@@ -153,6 +162,7 @@ class UserCreate(SQLModel):
     # PATCH — a failed second call would otherwise leave an account that is live
     # but not subject to the policy the admin asked for.
     totp_enforced: bool = False              # Force 2FA on first login
+    totp: Optional[str] = Field(default=None, max_length=12)  # the caller's code, for a new superuser
     must_change_password: bool = False       # Force password change at first login
     password_expires_at: Optional[datetime] = None  # Overrides the global policy
 
@@ -166,6 +176,7 @@ class UserUpdate(SQLModel):
     access: Optional[Access] = None
     group_id: Optional[str] = Field(default=None, max_length=36)
     totp_enforced: Optional[bool] = None  # Force 2FA on user
+    totp: Optional[str] = Field(default=None, max_length=12)  # the caller's code (see update_user)
     must_change_password: Optional[bool] = None  # Force password change at next login
     password_expires_at: Optional[datetime] = None  # Manual per-user expiry override
 

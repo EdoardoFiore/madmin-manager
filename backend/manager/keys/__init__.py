@@ -7,8 +7,14 @@ pending until another superuser rw approves it (never its owner); with a
 single superuser on the manager it is approved from the root CLI
 (python -m manager.keys approve <user> <fingerprint>). A change of the
 owner's role, access or group sends every key back to pending.
+
+Adding and approving a key each ask a fresh 2FA code (the owner's, the
+approver's), and every change is mailed to all superusers (notify.security).
+An account that just became a superuser, or whose password or 2FA someone
+else reset, approves nothing for APPROVAL_COOLDOWN: otherwise one stolen
+superuser could make itself a second one and approve its own key.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy import delete, update
@@ -18,6 +24,12 @@ from core.auth.models import User
 from manager.models import UserSshKey
 
 MAX_KEYS_PER_USER = 10
+APPROVAL_COOLDOWN = timedelta(hours=24)
+
+
+def start_cooldown(user: User) -> None:
+    """The user approves keys again only after APPROVAL_COOLDOWN (caller adds and commits)."""
+    user.key_approval_after = datetime.utcnow() + APPROVAL_COOLDOWN
 
 
 def key_out(key: UserSshKey, owner: str = "") -> dict:

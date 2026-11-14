@@ -107,8 +107,8 @@ The instance page shows a Rescue card (unit state, log, update journal) while `m
 
 ## 3. Support access
 
-1. Profile: enable TOTP.
-2. Supporto → Le mie chiavi SSH: add your public key; another superuser approves it after checking the fingerprint with you on another channel (single superuser: `sudo -u madmin-manager /opt/madmin-manager/venv/bin/python -m manager.keys approve <user> <fingerprint>` from `/opt/madmin-manager/backend`).
+1. TOTP: mandatory for superusers, set up at the first login (lost authenticator: another superuser resets it from Utenti, or as root `sudo -u madmin-manager /opt/madmin-manager/venv/bin/python -m core.auth reset-2fa <user>` from `/opt/madmin-manager/backend`).
+2. Supporto → Le mie chiavi SSH: add your public key (with a TOTP code); another superuser approves it (with their TOTP code) after checking the fingerprint with you on another channel (single superuser: `sudo -u madmin-manager /opt/madmin-manager/venv/bin/python -m manager.keys approve <user> <fingerprint>` from `/opt/madmin-manager/backend`). Every key change is mailed to all superusers: give every superuser an e-mail address. A new superuser, or one whose password or 2FA someone else reset, approves keys only after 24 h.
 3. Instance → Supporto → Accesso UI / Accesso SSH: duration (max 1 day), reason, your IP, a fresh TOTP code.
 
 At most 4 open sessions per user. The sshd log of the instance names the user and the key fingerprint.

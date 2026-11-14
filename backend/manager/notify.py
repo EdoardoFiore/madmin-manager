@@ -6,6 +6,11 @@ failed, an instance reporting through the rescue, a new critical
 vulnerability. Sent in the background; the same event (kind + key) at most
 once per THROTTLE. Without an SMTP host nothing is sent; the menu badges
 (/api/ui/badges) show the same things anyway.
+
+Security events (security()): SSH keys added, approved or removed, a new
+superuser, a superuser's password or 2FA reset by someone else. Never
+throttled, and sent to every superuser as well as to the Settings addresses:
+the warning must reach the people whose account could be the one abused.
 """
 import html
 import logging
@@ -22,13 +27,15 @@ THROTTLE = 3600
 _last: dict = {}
 
 
-async def recipients(session, settings) -> List[str]:
-    if settings.notify_to.strip():
-        return [a.strip() for a in settings.notify_to.split(",") if a.strip()]
+async def recipients(session, settings, superusers: bool = False) -> List[str]:
+    """The Settings addresses, else the superusers; both with superusers=True."""
+    configured = [a.strip() for a in settings.notify_to.split(",") if a.strip()]
+    if configured and not superusers:
+        return configured
     from core.auth.models import User
     rows = (await session.execute(select(User.email).where(
         User.role == "superuser", User.is_active == True, User.email != None))).all()  # noqa: E711,E712
-    return sorted({e for (e,) in rows if e})
+    return sorted({e for (e,) in rows if e} | set(configured))
 
 
 async def send(settings, subject: str, text: str, to: List[str]) -> List[str]:
@@ -51,7 +58,7 @@ async def send(settings, subject: str, text: str, to: List[str]) -> List[str]:
     return errors
 
 
-async def _deliver(subject: str, text: str) -> None:
+async def _deliver(subject: str, text: str, superusers: bool = False) -> None:
     from core.database import async_session_maker
     from core.settings.router import get_system_settings
     try:
@@ -59,7 +66,7 @@ async def _deliver(subject: str, text: str) -> None:
             settings = await get_system_settings(session)
             if not settings.smtp_host:
                 return
-            to = await recipients(session, settings)
+            to = await recipients(session, settings, superusers)
         if not to:
             return
         errors = await send(settings, subject, text, to)
@@ -78,3 +85,15 @@ def notify(kind: str, key: str, subject: str, text: str) -> None:
     if len(_last) > 10000:
         _last.clear()
     spawn_background(_deliver(subject, text), f"notify-{kind}")
+
+
+def security(subject: str, text: str, request=None) -> None:
+    """Queue a security event (see the module docstring), with where it came from."""
+    from datetime import datetime, timezone
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    origin = ""
+    if request is not None:
+        from core.http import get_client_ip
+        origin = f", indirizzo {get_client_ip(request)}"
+    text += f"\n\nQuando: {when}{origin}.\nSe non ti torna, revoca subito la chiave o disattiva l'utente."
+    spawn_background(_deliver(subject, text, superusers=True), "notify-security")

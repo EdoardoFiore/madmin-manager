@@ -10,7 +10,7 @@ import { checkPermission, setPageActions } from '../app.js';
 import { fmtDate, relTime, onlineBadge, commandStatusBadge, formModal, secretModal, copyBlock, enrollTokenHelp,
          formData, groupOptions, groupPath, labelBadges, labelsToText, textToLabels,
          cmpVersion, meter, STATUS_LABELS, field, formSection, notice, typedConfirm, confirmAction,
-         fieldError } from './manager-common.js';
+         fieldError, otpField } from './manager-common.js';
 import { severityBadge, advisoryLink, statusBadge, statusCell } from './vulnerabilities.js';
 
 const TABS = [
@@ -1185,9 +1185,7 @@ const ipField = field('allowed_ip', 'IP ammesso sulla porta di supporto', { maxl
     pattern: '^[0-9a-fA-F:.]+$', format: 'un indirizzo IPv4 o IPv6', example: '203.0.113.10',
     hint: 'vuoto = il tuo IP attuale' });
 // Step-up: a fresh code at every opening (a code is accepted once)
-const totpField = field('totp', 'Codice 2FA', { required: true, mono: true, pattern: '^[0-9]{6}$', maxlength: 6,
-    format: '6 cifre', col: 'col-md-6', attrs: 'inputmode="numeric" autocomplete="one-time-code"',
-    hint: 'dall\'app di autenticazione, nuovo a ogni apertura (non i codici di recupero)' });
+const totpField = otpField('dall\'app di autenticazione, nuovo a ogni apertura (non i codici di recupero)', 'col-md-6');
 
 export function licenseModal(instanceId, onDone) {
     formModal('Emetti licenza', `

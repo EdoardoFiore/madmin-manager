@@ -8,6 +8,15 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.3.0] - 2026-11-14
+
+### Added
+- TOTP mandatory for every superuser: the login asks to set it up, sessions of a superuser without it are refused, a superuser cannot turn it off. Root CLI `python -m core.auth reset-2fa <user>` for a lost authenticator.
+- A fresh TOTP code to add an SSH key (owner), to approve one (approver), to create or promote a superuser (caller).
+- E-mail to every superuser (and the Settings addresses) at every SSH key change and at every new superuser or superuser password/2FA reset, never throttled.
+- A new superuser (UI or LDAP), or one whose password or 2FA another user reset, approves SSH keys only after 24 h (schema step 0007, `user.key_approval_after`).
+- Root CLI `python -m core.settings agent-url`: the installer no longer logs in to write the agent URL.
+
 ## [1.2.3] - 2026-11-13
 
 ### Fixed

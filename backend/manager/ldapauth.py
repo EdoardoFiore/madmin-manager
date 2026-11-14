@@ -144,6 +144,13 @@ async def _apply(session, user, mapping: dict, mail: Optional[str]) -> bool:
     from core.auth import service as auth_service
     from manager.keys import reset_approvals
     changed = (user.role, user.access, user.group_id) != (mapping["role"], mapping["access"], mapping["group_id"])
+    if mapping["role"] == "superuser" and user.role != "superuser":
+        from manager.keys import start_cooldown
+        from manager.notify import security
+        start_cooldown(user)
+        security(f"Nuovo superuser LDAP: {user.username}",
+                 f"L'utente LDAP {user.username} è superuser ({mapping['access']}) per il gruppo "
+                 f"{mapping['group']} della directory. Per 24 ore non potrà approvare chiavi SSH.")
     user.role, user.access, user.group_id = mapping["role"], mapping["access"], mapping["group_id"]
     if mail:
         user.email = mail[:255]

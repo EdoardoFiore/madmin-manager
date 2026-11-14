@@ -103,6 +103,13 @@ export function field(name, label, opts = {}) {
     }
 }
 
+/** The caller's fresh 2FA code for a sensitive action (a code is accepted once). */
+export function otpField(hint = 'dall\'app di autenticazione, nuovo a ogni operazione (non i codici di recupero)',
+                         col = '') {
+    return field('totp', 'Codice 2FA', { required: true, mono: true, pattern: '^[0-9]{6}$', maxlength: 6,
+        format: '6 cifre', col, attrs: 'inputmode="numeric" autocomplete="one-time-code"', hint });
+}
+
 /** A small section title inside a modal. */
 export function formSection(title, note = '') {
     return `<div class="d-flex align-items-baseline gap-2 mt-2 mb-2 border-bottom pb-1">

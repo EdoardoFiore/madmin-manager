@@ -67,6 +67,13 @@ function refreshAccessFields(selectedGroup = null) {
         fillGroupOptions(role, current);
     }
     document.getElementById('access-summary').innerHTML = accessSummary(role, access);
+    // A new superuser (created or promoted) takes the caller's fresh 2FA code
+    const stepUp = role === 'superuser' && editingUser?.role !== 'superuser';
+    document.getElementById('user-stepup-col').classList.toggle('d-none', !stepUp);
+    // Superusers always need the 2FA: the switch only matters for the others
+    const enforced = document.getElementById('user-totp-enforced');
+    enforced.disabled = role === 'superuser';
+    if (role === 'superuser') enforced.checked = true;
 }
 
 /**
@@ -263,6 +270,13 @@ export async function render(container) {
                                         </div>
                                     </div>
                                     <div class="alert alert-secondary small mt-3 mb-0 py-2 px-3" id="access-summary"></div>
+                                    <div class="mt-3 d-none" id="user-stepup-col">
+                                        <label class="form-label required" for="user-stepup-totp">Il tuo codice 2FA</label>
+                                        <input type="text" class="form-control font-monospace" id="user-stepup-totp" maxlength="6"
+                                               pattern="^[0-9]{6}$" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+                                        <small class="form-hint">Per creare o promuovere un superuser: dall'app di autenticazione, nuovo a ogni
+                                            operazione. Tutti i superuser ricevono un'email; il nuovo superuser potrà approvare chiavi SSH dopo 24 ore.</small>
+                                    </div>
                                     <div class="form-hint d-none mt-2" id="access-self-hint">
                                         Ruolo, accesso e gruppo del tuo account li cambia un altro utente con accesso in scrittura.
                                     </div>
@@ -596,9 +610,10 @@ function openUserModal(user = null) {
     document.getElementById('user-access').disabled = lockAccess;
     document.getElementById('user-group').disabled = lockAccess;
     document.getElementById('access-self-hint').classList.toggle('d-none', !lockAccess);
-    refreshAccessFields(user?.group_id || '');
     document.getElementById('user-active').checked = user?.is_active ?? true;
     document.getElementById('user-totp-enforced').checked = user?.totp_enforced || false;
+    document.getElementById('user-stepup-totp').value = '';
+    refreshAccessFields(user?.group_id || '');
 
     // Password policy — offered on creation too: handing someone a temporary
     // password and forcing a change at first login is the normal way to open an
@@ -639,11 +654,15 @@ function openUserModal(user = null) {
 
 function accessFields() {
     const role = document.getElementById('user-role').value;
-    return {
+    const out = {
         role,
         access: document.getElementById('user-access').value,
         group_id: role === 'superuser' ? '' : (document.getElementById('user-group').value || ''),
     };
+    if (!document.getElementById('user-stepup-col').classList.contains('d-none')) {
+        out.totp = document.getElementById('user-stepup-totp').value.trim();
+    }
+    return out;
 }
 
 async function handleUserSubmit(e) {
@@ -658,6 +677,14 @@ async function handleUserSubmit(e) {
         showToast(t('users.passwordMismatch'), 'error');
         return;
     }
+    const stepUp = document.getElementById('user-stepup-totp');
+    if (!document.getElementById('user-stepup-col').classList.contains('d-none') && !/^[0-9]{6}$/.test(stepUp.value.trim())) {
+        stepUp.classList.add('is-invalid');
+        stepUp.focus();
+        showToast('Inserisci il tuo codice 2FA (6 cifre) per creare o promuovere un superuser', 'error');
+        return;
+    }
+    stepUp.classList.remove('is-invalid');
 
     try {
         if (editingUser) {
@@ -772,13 +799,11 @@ async function load2FAStatus() {
 
     try {
         const status = await apiGet('/auth/me/2fa/status');
-        const currentUser = getUser();
-        const isSuperuser = currentUser?.is_superuser || false;
         const isEnforced = status.enforced || false;
 
         if (status.enabled) {
-            // Show disable button only if: superuser OR not enforced
-            const canDisable = isSuperuser || !isEnforced;
+            // Required 2FA (enforced, or a superuser) can only be reset by someone else
+            const canDisable = !isEnforced;
 
             container.innerHTML = `
                 <div class="alert alert-success mb-3">

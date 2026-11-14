@@ -44,6 +44,10 @@ async def _approve(username: str, fingerprint: str) -> None:
                              duration_ms=0, category="write"))
         await session.commit()
         print(f"Chiave {fingerprint} di {username} approvata")
+    from manager.notify import _deliver
+    await _deliver(f"Chiave SSH di {username} approvata dalla CLI root",
+                   f"La chiave SSH \"{key.name}\" ({fingerprint}) di {username} è stata approvata dalla CLI root "
+                   "del manager (python -m manager.keys).", superusers=True)
 
 
 def _main() -> None:

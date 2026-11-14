@@ -86,7 +86,12 @@ async def get_current_user(
     if any(payload.get(flag) for flag in PENDING_FLAGS):
         raise credentials_exception
 
-    return await _resolve_user_from_payload(payload, session, credentials_exception)
+    user = await _resolve_user_from_payload(payload, session, credentials_exception)
+    # A session from before the 2FA became required (a superuser without it):
+    # back to the login, which asks to set it up
+    if user.totp_required and not user.totp_enabled:
+        raise credentials_exception
+    return user
 
 
 async def get_setup_user(

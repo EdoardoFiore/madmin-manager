@@ -394,16 +394,12 @@ case "$INIT_HTTP" in
 esac
 
 AGENT_URL="https://$PRIMARY_HOST:$AGENT_PORT"
-LOGIN_BODY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.urlencode({'username':sys.argv[1],'password':sys.argv[2],'grant_type':'password'}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
-JWT=$(curl -s -X POST http://127.0.0.1:8000/api/auth/token -H "Content-Type: application/x-www-form-urlencoded" -d "$LOGIN_BODY" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
-if [ -n "$JWT" ]; then
-    curl -s -o /dev/null -X PATCH http://127.0.0.1:8000/api/settings/system \
-        -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-        -d "{\"agent_url\": \"$AGENT_URL\"}" && log_success "Agent URL: $AGENT_URL"
+if (cd "$INSTALL_DIR/backend" && sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m core.settings agent-url --if-empty "$AGENT_URL"); then
+    :
 else
-    log_warning "Agent URL not set (login failed): set it in Settings ($AGENT_URL)"
+    log_warning "Agent URL not set: set it in Settings ($AGENT_URL)"
 fi
+echo "First login: superusers must set up the 2FA (authenticator app) before using the UI."
 
 echo ""
 log_success "=========================================="

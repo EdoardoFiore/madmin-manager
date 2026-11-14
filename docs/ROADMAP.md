@@ -515,7 +515,13 @@ Today a stolen superuser `rw` account can open a superuser UI session and root S
 - [x] Table `UserSshKey` (user, name, public key, fingerprint, status pending | approved, approved_by, approved_at, last_used_at); UI on the Support page (own keys, approval list); CLI `python -m manager.keys list|approve`.
 - [x] `support/service.py`: the SSH grant takes a key id, refuses anything not approved and not the caller's. The certificate key id is `<user> <fingerprint> <instance>` (in the instance's sshd log); the session stores the fingerprint.
 - [x] Audit of add, approve, remove (audit middleware; the CLI writes its own entry), use (`last_used_at`, session row).
-- [ ] Notification of a new key to the owner and the superusers: with 10.2 (for now, the badge on the Support page).
+- [x] Notification of every key change (added, approved, removed, approved from the CLI) to all superusers and the Settings addresses, never throttled (`notify.security`).
+
+**Against one stolen superuser making a second one (1.3.0).** Without these, a stolen superuser `rw` creates or promotes another account and approves its own key with it.
+
+- [x] Every superuser must have TOTP: the login asks to set it up (the MADMIN forced-setup flow), a session of a superuser without TOTP is refused, a superuser cannot turn it off (only another superuser resets it, or `python -m core.auth reset-2fa <user>` as root).
+- [x] Adding a key (owner) and approving it (approver) each take a fresh TOTP code; so does creating or promoting a superuser (the caller's code).
+- [x] An account that became a superuser (UI, LDAP mapping), or whose password or 2FA another user reset, approves no key for 24 h (`User.key_approval_after`, `manager.keys.APPROVAL_COOLDOWN`); every superuser is mailed.
 
 **Limits.** At most **4 open support sessions per user** at the same time (UI and SSH together, across all instances); a fifth is refused until one is closed or expires. No limit on how many are opened over time. Every session has the expiry chosen when it is opened, **1 day at most**.
 

@@ -56,7 +56,7 @@ async def require_step_up(session: AsyncSession, user: User, code: Optional[str]
     The caller commits on success (the consumed step is stored on the user).
     """
     if not user.totp_enabled or not user.totp_secret:
-        raise HTTPException(403, "Attivare la 2FA nel profilo per aprire sessioni di supporto")
+        raise HTTPException(403, "Attivare la 2FA nel profilo per questa operazione")
     if user.totp_locked:
         raise HTTPException(403, "2FA bloccata: contattare un amministratore")
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
@@ -119,7 +119,7 @@ def _user_response(user: User, group_paths: Optional[Dict[str, str]] = None) -> 
         group_path=(group_paths or {}).get(user.group_id or "", ""),
         auth_source=user.auth_source,
         totp_enabled=user.totp_enabled,
-        totp_enforced=user.totp_enforced,
+        totp_enforced=user.totp_required,
         totp_locked=user.totp_locked,
         must_change_password=user.must_change_password,
         password_expires_at=user.password_expires_at,
@@ -317,8 +317,8 @@ async def login(
         )
         return {"access_token": temp_token, "token_type": "2fa_required"}
 
-    # If 2FA is enforced but not yet set up, require setup
-    if user.totp_enforced and not user.totp_enabled:
+    # If 2FA is required (enforced, or a superuser) but not yet set up, require setup
+    if user.totp_required and not user.totp_enabled:
         temp_token = service.create_access_token(
             data={"sub": user.username, "user_id": str(user.id), "2fa_setup_required": True},
             expires_delta=timedelta(minutes=15)  # More time to set up
@@ -628,13 +628,19 @@ async def list_users(
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
+    request: Request,
     current_user: User = Depends(require_permission("users.manage")),
     session: AsyncSession = Depends(get_session)
 ):
-    """Create a user in the caller's scope (see _check_assignment)."""
+    """Create a user in the caller's scope (see _check_assignment). A
+    superuser takes the caller's fresh 2FA code (see manager.keys)."""
     await _check_assignment(session, current_user, user_data.role, user_data.group_id)
+    if user_data.role == "superuser":
+        await require_step_up(session, current_user, user_data.totp)
     try:
         user = await service.create_user(session, user_data)
+        if user.is_superuser:
+            _new_superuser(user, current_user, request, f"ha creato il superuser {user.username}")
         await session.commit()
         user = await service.get_user_by_username(session, user.username)
         return await _response(session, user)
@@ -652,14 +658,36 @@ async def get_user(
     return await _response(session, await _get_visible_user(session, current_user, username))
 
 
+def _new_superuser(user: User, actor: User, request: Request, how: str) -> None:
+    """A new superuser: approves SSH keys after the cooldown; every superuser is told."""
+    from manager.keys import start_cooldown
+    from manager.notify import security
+    start_cooldown(user)
+    security(f"Nuovo superuser: {user.username}",
+             f"{actor.username} {how} ({user.access}). Per 24 ore {user.username} non potrà approvare "
+             "chiavi SSH.", request)
+
+
+def _credentials_reset(user: User, actor: User, request: Request, what: str) -> None:
+    """Someone else reset a superuser's password or 2FA: same cooldown, same warning."""
+    from manager.keys import start_cooldown
+    from manager.notify import security
+    start_cooldown(user)
+    security(f"{what} del superuser {user.username} reimpostata",
+             f"{actor.username} ha reimpostato {what.lower()} del superuser {user.username}. Per 24 ore "
+             f"{user.username} non potrà approvare chiavi SSH.", request)
+
+
 @router.patch("/users/{username}", response_model=UserResponse)
 async def update_user(
     username: str,
     user_data: UserUpdate,
+    request: Request,
     current_user: User = Depends(require_permission("users.manage")),
     session: AsyncSession = Depends(get_session)
 ):
-    """Update a user in the caller's scope."""
+    """Update a user in the caller's scope. Making someone a superuser takes
+    the caller's fresh 2FA code (see manager.keys)."""
     user = await _get_visible_user(session, current_user, username)
 
     # Protected user: the first setup user can only be modified by themselves
@@ -681,8 +709,16 @@ async def update_user(
         await _check_assignment(session, current_user, role, group_id)
 
     before = (user.role, user.access, user.group_id)
+    promoted = user_data.role == "superuser" and user.role != "superuser"
+    if promoted:
+        await require_step_up(session, current_user, user_data.totp)
     try:
         updated_user = await service.update_user(session, user.id, user_data)
+        if promoted:
+            _new_superuser(updated_user, current_user, request,
+                           f"ha promosso {updated_user.username} a superuser")
+        elif updated_user.is_superuser and user_data.password is not None and user.id != current_user.id:
+            _credentials_reset(updated_user, current_user, request, "Password")
 
         # Disabled, given a new password, or moved to another role, access or
         # group: sessions opened before end now. Re-enabling revokes nothing.
@@ -733,6 +769,7 @@ async def delete_user(
 @router.delete("/users/{username}/2fa", status_code=status.HTTP_204_NO_CONTENT)
 async def disable_user_2fa(
     username: str,
+    request: Request,
     current_user: User = Depends(require_permission("users.manage")),
     session: AsyncSession = Depends(get_session)
 ):
@@ -766,6 +803,8 @@ async def disable_user_2fa(
 
     # Revoke active tokens so user must re-login
     service.revoke_sessions(user)
+    if user.is_superuser:
+        _credentials_reset(user, current_user, request, "2FA")
 
     await session.commit()
 
@@ -820,7 +859,7 @@ async def get_2fa_status(
 
     return {
         "enabled": current_user.totp_enabled,
-        "enforced": current_user.totp_enforced,
+        "enforced": current_user.totp_required,
         "locked": current_user.totp_locked,
         "has_backup_codes": has_backup_codes
     }
@@ -904,8 +943,8 @@ async def disable_2fa(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Disable 2FA (requires password verification).
-    Non-superusers cannot disable 2FA if it was enforced by an admin.
+    Disable 2FA (requires password verification). Not when it is required:
+    enforced by an admin, or a superuser (who always needs it).
     """
     if not current_user.totp_enabled:
         raise HTTPException(
@@ -913,11 +952,11 @@ async def disable_2fa(
             detail="2FA is not active"
         )
 
-    # Block non-superusers from disabling enforced 2FA
-    if current_user.totp_enforced and not current_user.is_superuser:
+    if current_user.totp_required:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="2FA has been enforced by the administrator and cannot be disabled"
+            detail="La 2FA è obbligatoria per questo account: si può solo riconfigurare "
+                   "(un altro superuser la reimposta)"
         )
 
     if not service.verify_password(data.password, current_user.hashed_password):
