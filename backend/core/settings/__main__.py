@@ -10,6 +10,8 @@ import argparse
 import asyncio
 import sys
 
+from pydantic import ValidationError
+
 from core.database import async_session_maker
 from .models import SystemSettingsUpdate
 from .router import get_system_settings
@@ -18,8 +20,8 @@ from .router import get_system_settings
 async def _agent_url(url: str, if_empty: bool) -> None:
     try:
         url = SystemSettingsUpdate(agent_url=url).agent_url
-    except ValueError as e:
-        sys.exit(f"ERRORE: {e}")
+    except ValidationError as e:
+        sys.exit(f"ERRORE: {e.errors()[0]['msg'].removeprefix('Value error, ')}")
     async with async_session_maker() as session:
         settings = await get_system_settings(session)
         if if_empty and settings.agent_url:

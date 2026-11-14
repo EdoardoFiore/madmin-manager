@@ -12,6 +12,7 @@ import asyncio
 import sys
 from datetime import datetime, timezone
 
+import manager.models  # noqa: F401  the user table's foreign keys point at manager tables
 from core.audit.models import AuditLog
 from core.database import async_session_maker
 from . import service
