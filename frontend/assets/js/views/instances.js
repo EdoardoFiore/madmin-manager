@@ -6,7 +6,7 @@
 import { apiGet, apiPost, apiPatch, apiDelete, getToken } from '../api.js';
 import { escapeHtml, showToast, confirmDialog, loadingSpinner, formatBytes,
          actionAttrs, registerActions } from '../utils.js';
-import { checkPermission, setPageActions } from '../app.js';
+import { checkPermission, setPageActions, refreshBadges } from '../app.js';
 import { fmtDate, relTime, onlineBadge, commandStatusBadge, formModal, secretModal, copyBlock, enrollTokenHelp,
          formData, groupOptions, groupPath, labelBadges, labelsToText, textToLabels,
          cmpVersion, meter, STATUS_LABELS, field, formSection, notice, typedConfirm, confirmAction,
@@ -25,6 +25,7 @@ const TABS = [
 
 let groups = [];
 let current = null;   // instance shown in the detail
+let currentTab = 'overview';
 let mainEl = null;    // right pane: overview or detail
 
 // ============== TREE (left) ==============
@@ -550,12 +551,68 @@ async function renderDetail(container, id, tab) {
             <div id="inst-tab">${loadingSpinner()}</div>
         </div>`;
     const el = container.querySelector('#inst-tab');
-    const renderers = { overview, addresses, backups, licenses, packages, support, commands };
+    currentTab = tab;
     try {
-        await renderers[tab](el, i);
+        await TAB_RENDERERS[tab](el, i);
     } catch (e) {
         el.innerHTML = `<div class="card-body text-danger">${escapeHtml(e.message)}</div>`;
     }
+    watchCommands(i.id);
+}
+
+/*
+ * The detail follows what the instance is doing: while a command is queued
+ * or running the tab shown is redrawn as soon as one changes state (a backup
+ * appears when it is done, the packages after an upgrade), without a reload.
+ * Polled every WATCH_BUSY_MS while something runs, WATCH_IDLE_MS otherwise;
+ * a redraw waits while a modal or a menu is open or a field has the focus.
+ */
+const WATCH_BUSY_MS = 3000;
+const WATCH_IDLE_MS = 15000;
+const ACTIVE = new Set(['queued', 'sent', 'running']);
+let watchTimer = null;
+
+function watchCommands(id) {
+    clearTimeout(watchTimer);
+    let last = null;
+    let dirty = false;
+    const tick = async () => {
+        if (!mainEl || !document.body.contains(mainEl) || current?.id !== id
+                || !location.hash.startsWith(`#instances/${id}`)) return;
+        let busy = false;
+        try {
+            const cmds = await apiGet(`/instances/${encodeURIComponent(id)}/commands?limit=15`);
+            busy = cmds.some(c => ACTIVE.has(c.status));
+            // Progress only redraws the tabs that show it; the others wait for a state change
+            const progress = ['overview', 'commands'].includes(currentTab);
+            const sig = JSON.stringify(cmds.map(c => [c.id, c.status,
+                progress ? [c.progress?.percent ?? null, c.progress?.step ?? null] : null]));
+            if (last !== null && sig !== last) dirty = true;
+            last = sig;
+            const typing = mainEl.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+            if (dirty && !typing && !document.querySelector('.modal.show, .dropdown-menu.show')) {
+                dirty = false;
+                await redrawTab();
+                refreshBadges();
+            }
+        } catch { /* next round */ }
+        watchTimer = setTimeout(tick, busy || dirty ? WATCH_BUSY_MS : WATCH_IDLE_MS);
+    };
+    watchTimer = setTimeout(tick, WATCH_BUSY_MS);
+}
+
+/** The tab shown, drawn again in place (no spinner, scroll kept). */
+async function redrawTab() {
+    const el = mainEl?.querySelector('#inst-tab');
+    if (!el || !current) return;
+    const fresh = await apiGet(`/instances/${encodeURIComponent(current.id)}`);
+    if (fresh.id !== current.id) return;
+    current = fresh;
+    const y = window.scrollY;
+    destroyCharts();
+    await TAB_RENDERERS[currentTab](el, current);
+    window.scrollTo(0, y);
+    reloadTree();
 }
 
 function kv(rows) {
@@ -1168,6 +1225,8 @@ function progressText(p) {
     return [p.step, p.percent != null ? `${p.percent}%` : '', p.message].filter(Boolean).join(' · ');
 }
 
+const TAB_RENDERERS = { overview, addresses, backups, licenses, packages, support, commands };
+
 // The tree too: name, group or status may have changed
 const reloadDetail = (tab) => {
     reloadTree();
@@ -1615,7 +1674,7 @@ registerActions({
         catch (e) { showToast(e.message, 'error'); }
     },
     managerBackupRun: async () => {
-        try { await apiPost(`/instances/${current.id}/backups`, {}); showToast('Backup richiesto: compare qui al termine', 'success'); setTimeout(() => reloadDetail('backups'), 5000); }
+        try { await apiPost(`/instances/${current.id}/backups`, {}); showToast('Backup richiesto: compare qui al termine', 'success'); }
         catch (e) { showToast(e.message, 'error'); }
     },
     managerBackupDownload: async (id) => {

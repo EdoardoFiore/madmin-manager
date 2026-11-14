@@ -6,7 +6,7 @@
 import { apiGet, apiPost, apiPut, apiDelete } from '../api.js';
 import { escapeHtml, showToast, confirmDialog, loadingSpinner, actionAttrs, registerActions } from '../utils.js';
 import { checkPermission, setPageActions } from '../app.js';
-import { fmtDate, relTime, formModal, formData, groupOptions, textToLabels, secretModal, field, formSection, notice,
+import { refreshLater, fmtDate, relTime, formModal, formData, groupOptions, textToLabels, secretModal, field, formSection, notice,
          confirmAction, fieldError } from './manager-common.js';
 
 const ACTIONS = {
@@ -53,8 +53,10 @@ export async function render(container) {
     const superuser = checkPermission('manager.manage');
     setPageActions(`<button class="btn btn-primary" ${actionAttrs('rolloutNew')}><i class="ti ti-plus me-1"></i>Nuovo rollout</button>
         ${superuser ? `<button class="btn btn-outline-primary" ${actionAttrs('scheduleNew')}><i class="ti ti-calendar-repeat me-1"></i>Nuova pianificazione</button>` : ''}`);
-    const [rows, schedules] = await Promise.all([apiGet('/rollouts'),
-        checkPermission('manager.view') ? apiGet('/rollout-schedules').catch(() => []) : Promise.resolve([])]);
+    // The open detail is fetched with the list: redrawn in one go, no spinner
+    const [rows, schedules, detail] = await Promise.all([apiGet('/rollouts'),
+        checkPermission('manager.view') ? apiGet('/rollout-schedules').catch(() => []) : Promise.resolve([]),
+        openId ? apiGet(`/rollouts/${openId}`).catch(() => null) : Promise.resolve(null)]);
     container.innerHTML = `<div class="card">
         <div class="table-responsive"><table class="table card-table table-vcenter">
             <thead><tr><th>Rollout</th><th>Azione</th><th>Stato</th><th style="min-width: 14rem">Avanzamento</th><th>Creato</th><th></th></tr></thead>
@@ -86,14 +88,21 @@ export async function render(container) {
                         <button class="btn btn-sm btn-outline-danger" ${actionAttrs('scheduleDelete', sc.id)}><i class="ti ti-trash"></i></button></div>` : ''}</td>
                 </tr>`).join('') || '<tr><td colspan="6" class="text-muted">Nessuna pianificazione. Esempio: ogni notte riavvio dei servizi in sospeso, o ogni domenica il riavvio delle istanze con riavvio consigliato.</td></tr>'}</tbody>
             </table></div></div>` : ''}`;
-    if (openId) await showDetail(openId);
+    if (detail) drawDetail(detail);
+    // Progress follows by itself while something is running or waiting
+    if (rows.some(r => ACTIVE.includes(r.status))) refreshLater(container, '#rollouts', () => render(container));
 }
+
+const ACTIVE = ['running', 'waiting'];
 
 async function showDetail(id) {
     openId = id;
+    containerEl.querySelector('#rollout-detail').innerHTML = loadingSpinner();
+    drawDetail(await apiGet(`/rollouts/${id}`));
+}
+
+function drawDetail(r) {
     const el = containerEl.querySelector('#rollout-detail');
-    el.innerHTML = loadingSpinner();
-    const r = await apiGet(`/rollouts/${id}`);
     const manage = !ACTIONS[r.action]?.[1] || checkPermission('manager.manage');
     const btn = (action, label, cls, show) => show && manage
         ? `<button class="btn btn-sm ${cls}" ${actionAttrs(action, r.id)}>${label}</button>` : '';

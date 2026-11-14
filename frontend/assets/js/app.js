@@ -533,7 +533,7 @@ async function loadMenu() {
 
         navMenu.innerHTML = menuHtml;
         refreshBadges();
-        if (!badgeTimer) badgeTimer = setInterval(refreshBadges, 60000);
+        if (!badgeTimer) badgeTimer = setInterval(refreshBadges, 30000);
 
     } catch (error) {
         console.error('Failed to load menu:', error);
@@ -545,8 +545,16 @@ async function loadMenu() {
  */
 let badgeTimer = null;
 
+// After any change made from the UI (api.js signals it) the counts follow
+// at once instead of at the next round
+let badgeDebounce = null;
+window.addEventListener('madmin:changed', () => {
+    clearTimeout(badgeDebounce);
+    badgeDebounce = setTimeout(refreshBadges, 300);
+});
+
 /** Counts next to the menu entries (requests to approve, critical findings, ...). */
-async function refreshBadges() {
+export async function refreshBadges() {
     let counts = {};
     try {
         const r = await fetch('/api/ui/badges', { headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` } });

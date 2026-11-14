@@ -6,7 +6,7 @@
 import { apiGet, apiPost, getToken } from '../api.js';
 import { escapeHtml, showToast, loadingSpinner, actionAttrs, registerActions } from '../utils.js';
 import { checkPermission } from '../app.js';
-import { fmtDate, relTime, groupOptions, secretModal } from './manager-common.js';
+import { refreshLater, fmtDate, relTime, groupOptions, secretModal } from './manager-common.js';
 
 export const SEVERITY = {
     critical: ['Critica', 'bg-red text-red-fg'],
@@ -143,7 +143,15 @@ export async function render(container) {
     });
     container.querySelector('#vuln-group').addEventListener('change', (e) => { state.group = e.target.value; render(container); });
     await renderTab();
+    // A scan running (or just asked for: it starts within a minute): the
+    // results appear when it ends, without a reload
+    const lastScan = scan.last_scan_at ? new Date(scan.last_scan_at + 'Z').getTime() : 0;
+    const waiting = scanRequestedAt && lastScan < scanRequestedAt && Date.now() - scanRequestedAt < 5 * 60000;
+    if (scan.running || waiting) refreshLater(container, '#vulnerabilities', () => render(container));
+    else scanRequestedAt = 0;
 }
+
+let scanRequestedAt = 0;
 
 /** The flow, from the instance to an action: collapsed after the first visit. */
 function howItWorks() {
@@ -273,7 +281,12 @@ registerActions({
         } catch (e) { showToast(e.message, 'error'); }
     },
     vulnScan: async () => {
-        try { await apiPost('/vulnerabilities/scan', {}); showToast('Scansione avviata (entro un minuto)', 'success'); }
+        try {
+            await apiPost('/vulnerabilities/scan', {});
+            showToast('Scansione avviata (entro un minuto): i risultati compaiono qui al termine', 'success');
+            scanRequestedAt = Date.now();
+            refreshLater(containerEl, '#vulnerabilities', () => render(containerEl));
+        }
         catch (e) { showToast(e.message, 'error'); }
     },
     vulnExport: async () => {

@@ -99,6 +99,10 @@ export async function apiFetch(endpoint, options = {}) {
         throw new Error('Session expired');
     }
 
+    // Something changed: the menu counts (app.js) are fetched again
+    const method = (options.method || 'GET').toUpperCase();
+    if (method !== 'GET' && response.ok) window.dispatchEvent(new Event('madmin:changed'));
+
     return response;
 }
 

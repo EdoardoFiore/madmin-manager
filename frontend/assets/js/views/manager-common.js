@@ -40,6 +40,29 @@ export function commandStatusBadge(status) {
     return `<span class="badge ${cls}">${label}</span>`;
 }
 
+const refreshTimers = new WeakMap();
+
+/**
+ * Draw a page again in ms (a rollout running, a scan in progress), as long as
+ * it is still the page shown: one pending redraw per container, postponed
+ * while a modal or a menu is open or a field of the page has the focus,
+ * scroll position kept.
+ */
+export function refreshLater(container, hashPrefix, redraw, ms = 5000) {
+    clearTimeout(refreshTimers.get(container));
+    refreshTimers.set(container, setTimeout(async () => {
+        if (!document.body.contains(container) || !location.hash.startsWith(hashPrefix)) return;
+        const typing = container.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+        if (typing || document.querySelector('.modal.show, .dropdown-menu.show')) {
+            refreshLater(container, hashPrefix, redraw, ms);
+            return;
+        }
+        const y = window.scrollY;
+        try { await redraw(); } catch { /* the next manual reload shows the error */ }
+        window.scrollTo(0, y);
+    }, ms));
+}
+
 // ============== FORM KIT ==============
 // Every modal of the manager is built from these pieces, so they all look and
 // behave the same: required fields marked with a red asterisk, optional ones

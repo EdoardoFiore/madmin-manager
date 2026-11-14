@@ -8,6 +8,15 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.3.3] - 2026-11-14
+
+### Fixed
+- Menu counts (badges) stayed until a page reload after an action (an SSH key approved, a request handled): they are fetched again after every change made from the UI, and every 30 s (was 60 s).
+- Instance detail: the tab shown is redrawn in place as soon as a command changes state (a backup appears when it is done, packages after an upgrade, progress on Panoramica and Comandi), polled every 3 s while a command runs, 15 s otherwise.
+- Rollouts: progress and the open detail follow by themselves while a rollout runs or waits, without the spinner.
+- Vulnerabilità: after "Scansiona ora" (or while a scan runs) the page shows the results when the scan ends.
+- Automatic redraws wait while a modal or a menu is open or a field has the focus.
+
 ## [1.3.2] - 2026-11-14
 
 ### Fixed
