@@ -8,6 +8,14 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.5.0] - 2026-11-15
+
+### Changed
+- `setup-manager.sh` rerun over an existing manager (the update): `sudo bash scripts/setup-manager.sh` with no options. The administrator password is asked only when the database has no user yet (before, every rerun needed one, then ignored it). Without `--host`/`--ip` the endpoint certificate is reissued with its current names; given ones must include all of them, else the script stops before changing anything (`--replace-names` drops a name on purpose): before, a name left out was dropped and the instances using it stopped connecting.
+
+### Fixed
+- README: the update section still said there were no schema migrations.
+
 ## [1.4.2] - 2026-11-15
 
 ### Fixed
