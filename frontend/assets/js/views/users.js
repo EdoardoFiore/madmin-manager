@@ -9,6 +9,7 @@ import {
 } from '../utils.js';
 import { setPageActions, checkPermission, getUser } from '../app.js';
 import { t } from '../i18n.js';
+import { formModal, formData, otpField } from './manager-common.js';
 
 let users = [];
 let groups = [];      // groups in the caller's scope (GET /groups)
@@ -57,6 +58,18 @@ function fillGroupOptions(role, selected = '') {
         : `<option value="">Nessun gruppo ${kind === 'partner' ? 'partner' : 'cliente'} disponibile</option>`;
 }
 
+/** Editing another superuser's account: a new password for it takes a step-up code. */
+function otherSuperuser() {
+    return editingUser?.role === 'superuser' && editingUser.username !== getUser()?.username;
+}
+
+/** Whether this save sends a step-up code (the field may be visible without being needed). */
+function stepUpNeeded() {
+    const role = document.getElementById('user-role').value;
+    const promotes = role === 'superuser' && editingUser?.role !== 'superuser';
+    return promotes || (otherSuperuser() && !!document.getElementById('user-password').value);
+}
+
 function refreshAccessFields(selectedGroup = null) {
     const role = document.getElementById('user-role').value;
     const access = document.getElementById('user-access').value;
@@ -67,8 +80,9 @@ function refreshAccessFields(selectedGroup = null) {
         fillGroupOptions(role, current);
     }
     document.getElementById('access-summary').innerHTML = accessSummary(role, access);
-    // A new superuser (created or promoted) takes the caller's fresh 2FA code
-    const stepUp = role === 'superuser' && editingUser?.role !== 'superuser';
+    // A new superuser (created or promoted), or a new password for another
+    // superuser, takes the caller's fresh 2FA code
+    const stepUp = (role === 'superuser' && editingUser?.role !== 'superuser') || otherSuperuser();
     document.getElementById('user-stepup-col').classList.toggle('d-none', !stepUp);
     // Superusers always need the 2FA: the switch only matters for the others
     const enforced = document.getElementById('user-totp-enforced');
@@ -274,8 +288,9 @@ export async function render(container) {
                                         <label class="form-label required" for="user-stepup-totp">Il tuo codice 2FA</label>
                                         <input type="text" class="form-control font-monospace" id="user-stepup-totp" maxlength="6"
                                                pattern="^[0-9]{6}$" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
-                                        <small class="form-hint">Per creare o promuovere un superuser: dall'app di autenticazione, nuovo a ogni
-                                            operazione. Tutti i superuser ricevono un'email; il nuovo superuser potrà approvare chiavi SSH dopo 24 ore.</small>
+                                        <small class="form-hint">Per creare o promuovere un superuser, o cambiare la password di un altro superuser:
+                                            dall'app di autenticazione, nuovo a ogni operazione. Tutti i superuser ricevono un'email; l'account potrà
+                                            approvare chiavi SSH dopo 24 ore.</small>
                                     </div>
                                     <div class="form-hint d-none mt-2" id="access-self-hint">
                                         Ruolo, accesso e gruppo del tuo account li cambia un altro utente con accesso in scrittura.
@@ -644,7 +659,7 @@ function openUserModal(user = null) {
         // Remove old listeners by cloning
         const newBtn = reset2faBtn.cloneNode(true);
         reset2faBtn.parentNode.replaceChild(newBtn, reset2faBtn);
-        newBtn.addEventListener('click', () => handleReset2FA(user.username));
+        newBtn.addEventListener('click', () => handleReset2FA(user));
     } else {
         reset2faBtn.classList.add('d-none');
     }
@@ -659,9 +674,7 @@ function accessFields() {
         access: document.getElementById('user-access').value,
         group_id: role === 'superuser' ? '' : (document.getElementById('user-group').value || ''),
     };
-    if (!document.getElementById('user-stepup-col').classList.contains('d-none')) {
-        out.totp = document.getElementById('user-stepup-totp').value.trim();
-    }
+    if (stepUpNeeded()) out.totp = document.getElementById('user-stepup-totp').value.trim();
     return out;
 }
 
@@ -678,10 +691,10 @@ async function handleUserSubmit(e) {
         return;
     }
     const stepUp = document.getElementById('user-stepup-totp');
-    if (!document.getElementById('user-stepup-col').classList.contains('d-none') && !/^[0-9]{6}$/.test(stepUp.value.trim())) {
+    if (stepUpNeeded() && !/^[0-9]{6}$/.test(stepUp.value.trim())) {
         stepUp.classList.add('is-invalid');
         stepUp.focus();
-        showToast('Inserisci il tuo codice 2FA (6 cifre) per creare o promuovere un superuser', 'error');
+        showToast('Inserisci il tuo codice 2FA (6 cifre): serve per creare o promuovere un superuser e per cambiare la password di un altro superuser', 'error');
         return;
     }
     stepUp.classList.remove('is-invalid');
@@ -1081,7 +1094,22 @@ function setupRegenerateCodes() {
 /**
  * Handle admin reset of user 2FA
  */
-async function handleReset2FA(username) {
+async function handleReset2FA(user) {
+    const username = user.username;
+    const done = async () => {
+        showToast(t('users.2faDisabledSuccess'), 'success');
+        bootstrap.Modal.getInstance(document.getElementById('user-modal'))?.hide();
+        await loadData();
+    };
+    if (user.role === 'superuser') {
+        // Whoever resets it sets up the next 2FA of that superuser: the caller's fresh code
+        formModal(t('users.reset2fa'), `<p>${escapeHtml(t('users.reset2faConfirm', { username }))}</p>
+            <div class="row g-2">${otpField()}</div>`, async (form) => {
+            await apiDeleteWithBody(`/auth/users/${username}/2fa`, { totp: formData(form).totp });
+            await done();
+        }, { submitText: t('users.reset2fa'), submitClass: 'btn-danger', tone: 'danger', icon: 'ti-shield-off' });
+        return;
+    }
     const confirmed = await confirmDialog(
         t('users.reset2fa'),
         t('users.reset2faConfirm', { username }),
@@ -1093,12 +1121,7 @@ async function handleReset2FA(username) {
 
     try {
         await apiDelete(`/auth/users/${username}/2fa`);
-        showToast(t('users.2faDisabledSuccess'), 'success');
-
-        // Hide modal and refresh
-        const modal = bootstrap.Modal.getInstance(document.getElementById('user-modal'));
-        modal.hide();
-        await loadData();
+        await done();
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
     }

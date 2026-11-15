@@ -729,8 +729,11 @@ async def update_user(
 
     before = (user.role, user.access, user.group_id)
     promoted = user_data.role == "superuser" and user.role != "superuser"
-    if promoted:
-        await require_step_up(session, current_user, user_data.totp)
+    # A new password for another superuser takes over that account: the
+    # caller's fresh 2FA code, as for making one
+    resets_superuser = user.is_superuser and user.id != current_user.id and user_data.password is not None
+    if promoted or resets_superuser:
+        await require_step_up(session, current_user, user_data.totp, request)
     try:
         updated_user = await service.update_user(session, user.id, user_data)
         if promoted:
@@ -785,10 +788,15 @@ async def delete_user(
     await session.commit()
 
 
+class TwoFactorResetRequest(BaseModel):
+    totp: str = ""   # the caller's fresh 2FA code: required when the target is a superuser
+
+
 @router.delete("/users/{username}/2fa", status_code=status.HTTP_204_NO_CONTENT)
 async def disable_user_2fa(
     username: str,
     request: Request,
+    body: Optional[TwoFactorResetRequest] = None,
     current_user: User = Depends(require_permission("users.manage")),
     session: AsyncSession = Depends(get_session)
 ):
@@ -811,6 +819,11 @@ async def disable_user_2fa(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Use /api/auth/me/2fa/disable to turn off your own 2FA"
         )
+
+    if user.is_superuser:
+        # Whoever resets it sets up the next 2FA at the login: a takeover
+        # of that account, so the caller's fresh code
+        await require_step_up(session, current_user, body.totp if body else "", request)
 
     # Disable 2FA and clear lock
     user.totp_enabled = False
