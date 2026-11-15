@@ -111,7 +111,8 @@ if [ ${#MANAGER_HOSTS[@]} -eq 0 ] && [ ${#MANAGER_IPS[@]} -eq 0 ]; then
     fi
     MANAGER_HOSTS=("${PREV_HOSTS[@]}")
     MANAGER_IPS=("${PREV_IPS[@]}")
-    log_info "Endpoint names kept from the current certificate: ${MANAGER_HOSTS[*]} ${MANAGER_IPS[*]}"
+    KEPT=("${MANAGER_HOSTS[@]}" "${MANAGER_IPS[@]}")
+    log_info "Endpoint names kept from the current certificate: ${KEPT[*]}"
 else
     GIVEN=" "
     for n in "${MANAGER_HOSTS[@]}" "${MANAGER_IPS[@]}"; do GIVEN+="$(canonical "$n") "; done
