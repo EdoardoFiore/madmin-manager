@@ -8,6 +8,28 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.4.0] - 2026-11-15
+
+Fixes from the security audit of 2026-11-15 (findings F1-F15).
+
+### Security
+- An anonymous POST to `/api/releases` (up to 1 GB) was read into memory by the audit middleware before the route refused it: only JSON or form bodies up to 50 KB are read for the log now (F1).
+- Login: the block on a target username no longer escalates (it locked a chosen account, its owner's correct password included, from any address); 5 wrong 2FA codes suspend the 2FA for 15 minutes and mail the superusers, instead of a permanent lock and the revocation of every session (F2).
+- The TOTP replay guard is one atomic UPDATE: two concurrent requests with the same code both passed (F4).
+- Support: a new UI ticket asks a fresh 2FA code and is given only to the operator of the session (F5); the SSH certificate principal is `madmin-support-<instance id>`, named by the manager, never taken from the instance's answer (F6).
+- Values reported by instances (resource line, update result, rescue free disk) are escaped on the instance page; heartbeat stats keep numbers only (F3).
+- nginx sets `X-Forwarded-For` on the agent server (the client's own header reached uvicorn's access log) (F7).
+- A first install needs `--ui-allow` (or `--ui-allow-any` for a test manager); a reinstall with an open UI warns (F8).
+- A new password or a 2FA reset for another superuser, and a new API key, take the caller's fresh 2FA code (F9); an API key with `provisioning.enroll` needs allowed networks (F10).
+- Token-less registration: at most 20 pending requests per source address; mail subjects without control characters (F11).
+- At most 64 interface addresses per report, and none from facts too large to keep (F12).
+- A command result resolves the waiting call only when it comes from the instance the command was sent to (F13).
+- The installer keeps passwords out of process arguments; `-p/--password` is gone (F14).
+- Manager backups start with an HMAC-SHA256 of the encrypted payload, checked by `manager-restore.sh` before decrypting; older archives are restored with a warning (F15).
+
+### Changed (API)
+- `POST /api/support/{id}/ticket` takes `{"totp": "..."}`; `POST /api/apikeys` takes `totp`; `DELETE /api/auth/users/{u}/2fa` takes `{"totp": "..."}` when the target is a superuser; `PATCH /api/auth/users/{u}` takes `totp` when it sets another superuser's password.
+
 ## [1.3.3] - 2026-11-14
 
 ### Fixed
