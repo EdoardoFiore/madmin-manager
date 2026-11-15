@@ -11,14 +11,15 @@
 #
 # Usage:
 #   sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash setup-manager.sh --host manager.example.com [--ip 10.0.0.5]
-#        [-u admin] [--ui-port 443] [--agent-port 8443] [--ui-allow 10.0.0.0/24,192.0.2.10]
+#        [-u admin] [--ui-port 443] [--agent-port 8443] --ui-allow 10.0.0.0/24,192.0.2.10 | --ui-allow-any
 #
 # --ui-allow: source addresses (CIDR, comma separated) allowed on the UI port;
 # everything else gets 403 from nginx. Written to
 # /etc/nginx/snippets/madmin-manager-ui-allow.conf: a reinstall without the
 # option keeps the current list; to change it later, rerun with --ui-allow or
-# edit the file and `nginx -t && systemctl reload nginx`. Without it the UI is
-# open to every address (not for production, see docs/ROADMAP.md 10.4). The
+# edit the file and `nginx -t && systemctl reload nginx`. A first install
+# needs it, or --ui-allow-any for a UI open to every address (test managers
+# only, see docs/ROADMAP.md 10.4). The
 # agent port stays open to the instances; support ports check their own IP.
 #
 # --host / --ip: the name and/or address instances use to reach the manager.
@@ -42,16 +43,18 @@ MANAGER_IPS=()
 UI_PORT=443
 AGENT_PORT=8443
 UI_ALLOW=""
+UI_ALLOW_ANY="false"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -u|--username) ADMIN_USERNAME="$2"; shift ;;
-        -p|--password) ADMIN_PASSWORD="$2"; shift ;;
+        -p|--password) log_error "-p is gone (the password showed in the process list): use MADMIN_MANAGER_ADMIN_PASSWORD=..."; exit 1 ;;
         --host) MANAGER_HOSTS+=("$2"); shift ;;
         --ip) MANAGER_IPS+=("$2"); shift ;;
         --ui-port) UI_PORT="$2"; shift ;;
         --agent-port) AGENT_PORT="$2"; shift ;;
         --ui-allow) UI_ALLOW="$2"; shift ;;
+        --ui-allow-any) UI_ALLOW_ANY="true" ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
     shift
@@ -73,6 +76,13 @@ fi
 if [ ${#ADMIN_PASSWORD} -lt 8 ] || ! [[ "$ADMIN_PASSWORD" =~ [A-Z] ]] || ! [[ "$ADMIN_PASSWORD" =~ [0-9] ]] \
         || ! [[ "$ADMIN_PASSWORD" =~ [^a-zA-Z0-9] ]]; then
     log_error "Password: at least 8 characters, one uppercase letter, one digit, one special character"
+    exit 1
+fi
+
+# A new manager states who may reach its UI: an open UI turns every
+# account (and every unauthenticated endpoint) into an Internet target
+if [ -z "$UI_ALLOW" ] && [ "$UI_ALLOW_ANY" != "true" ] && [ ! -f /etc/nginx/snippets/madmin-manager-ui-allow.conf ]; then
+    log_error "--ui-allow <CIDR,...> required (or --ui-allow-any for a test manager open to every address)"
     exit 1
 fi
 
@@ -108,7 +118,10 @@ if [ -f "$INSTALL_DIR/backend/.env" ]; then
 else
     DB_PASSWORD="$(openssl rand -hex 16)"
     SECRET_KEY="$(openssl rand -hex 32)"
-    sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" >/dev/null
+    # On stdin, not in psql's arguments (visible in the process list)
+    sudo -u postgres psql -q >/dev/null <<SQL
+CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';
+SQL
     sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" >/dev/null
 fi
 
@@ -184,7 +197,9 @@ if [ -n "$UI_ALLOW" ]; then
     } > "$UI_ALLOW_FILE"
 elif [ ! -f "$UI_ALLOW_FILE" ]; then
     echo "# Source addresses allowed on the MADMIN Manager UI: none set, open to all (setup-manager.sh --ui-allow)" > "$UI_ALLOW_FILE"
-    log_warning "UI open to every source address: use --ui-allow in production"
+    log_warning "UI open to every source address (--ui-allow-any): use --ui-allow in production"
+elif ! grep -q '^allow ' "$UI_ALLOW_FILE"; then
+    log_warning "UI open to every source address ($UI_ALLOW_FILE): use --ui-allow in production"
 fi
 
 # Every proxied UI request: the agent certificate headers are blanked, so
@@ -285,6 +300,8 @@ server {
         client_max_body_size 256k;
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header X-Real-IP \$remote_addr;
+        # uvicorn trusts X-Forwarded-For from nginx (--proxy-headers): never the client's
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-SSL-Client-Verify "";
         proxy_set_header X-SSL-Client-Cert "";
     }
@@ -296,6 +313,8 @@ server {
         client_max_body_size 256k;
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header X-Real-IP \$remote_addr;
+        # uvicorn trusts X-Forwarded-For from nginx (--proxy-headers): never the client's
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-SSL-Client-Verify "";
         proxy_set_header X-SSL-Client-Cert "";
     }
@@ -304,11 +323,15 @@ server {
         limit_req_status 429;
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header X-Real-IP \$remote_addr;
+        # uvicorn trusts X-Forwarded-For from nginx (--proxy-headers): never the client's
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-SSL-Client-Verify "";
         proxy_set_header X-SSL-Client-Cert "";
     }
     location = /agent/ca.pem {
         proxy_pass http://127.0.0.1:8000;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-SSL-Client-Verify "";
         proxy_set_header X-SSL-Client-Cert "";
     }
@@ -319,6 +342,8 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
         proxy_set_header X-Real-IP \$remote_addr;
+        # uvicorn trusts X-Forwarded-For from nginx (--proxy-headers): never the client's
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-SSL-Client-Verify \$ssl_client_verify;
         proxy_set_header X-SSL-Client-Cert \$ssl_client_escaped_cert;
         # Control channel and tunnels stay open; backups stream both ways
@@ -384,9 +409,11 @@ fi
 
 # --- Step 7: administrator and agent URL ---
 log_info "Step 7/7: Administrator and settings..."
-INIT_BODY=$(python3 -c "import json,sys; print(json.dumps({'username':sys.argv[1],'password':sys.argv[2]}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
-INIT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/auth/init \
-    -H "Content-Type: application/json" -d "$INIT_BODY")
+# The password reaches curl on stdin, never in a process's arguments
+INIT_HTTP=$(MM_INIT_USER="$ADMIN_USERNAME" MM_INIT_PASSWORD="$ADMIN_PASSWORD" python3 -c \
+        "import json,os; print(json.dumps({'username': os.environ['MM_INIT_USER'], 'password': os.environ['MM_INIT_PASSWORD']}))" \
+    | curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/auth/init \
+        -H "Content-Type: application/json" --data-binary @-)
 case "$INIT_HTTP" in
     201) log_success "Administrator created: $ADMIN_USERNAME" ;;
     409) log_warning "An administrator already exists: not created again" ;;
