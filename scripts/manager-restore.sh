@@ -41,7 +41,32 @@ ENV_FILE="$INSTALL_DIR/backend/.env"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass "file:$PASS_FILE" -in "$IN" | tar -C "$WORK" -xzf -
+# Archives of manager-backup.sh 1.4.0+ start with "MMBK2 <hmac>": checked
+# (wrong passphrase or altered file) before anything is decrypted or unpacked
+OFFSET="$(python3 - "$PASS_FILE" "$IN" << 'PY'
+import hashlib, hmac, sys
+with open(sys.argv[2], "rb") as f:
+    head = f.read(6)
+    if head != b"MMBK2 ":
+        print(0)
+        sys.exit(0)
+    expected = f.readline().strip().decode()
+    offset = 6 + len(expected) + 1
+    passphrase = open(sys.argv[1], "rb").read().split(b"\n")[0]
+    key = hashlib.pbkdf2_hmac("sha256", passphrase, b"madmin-manager backup mac v1", 200000)
+    mac = hmac.new(key, digestmod=hashlib.sha256)
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        mac.update(chunk)
+if not hmac.compare_digest(mac.hexdigest(), expected):
+    sys.exit("Archive check failed: wrong passphrase, or the file was altered")
+print(offset)
+PY
+)"
+if [ "$OFFSET" = "0" ]; then
+    echo "WARNING: archive without integrity check (made by manager-backup.sh before 1.4.0)" >&2
+fi
+tail -c +"$((OFFSET + 1))" "$IN" \
+    | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass "file:$PASS_FILE" | tar -C "$WORK" -xzf -
 B="$WORK/backup"
 for f in database.dump env data.tar info.json; do
     [ -f "$B/$f" ] || { echo "Archive incomplete: $f missing" >&2; exit 1; }

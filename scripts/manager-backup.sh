@@ -54,6 +54,23 @@ cat > "$WORK/backup/info.json" << INFO
 INFO
 
 tar -C "$WORK" -czf - backup \
-    | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass "file:$PASS_FILE" -out "$OUT"
+    | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass "file:$PASS_FILE" -out "$WORK/payload.enc"
+# openssl enc does not authenticate: the archive starts with an HMAC-SHA256
+# of the encrypted payload (key derived from the passphrase), checked by
+# manager-restore.sh before anything is decrypted or unpacked.
+# Format: "MMBK2 <hex mac>\n" + payload.
+python3 - "$PASS_FILE" "$WORK/payload.enc" "$OUT" << 'PY'
+import hashlib, hmac, sys
+passphrase = open(sys.argv[1], "rb").read().split(b"\n")[0]
+key = hashlib.pbkdf2_hmac("sha256", passphrase, b"madmin-manager backup mac v1", 200000)
+mac = hmac.new(key, digestmod=hashlib.sha256)
+with open(sys.argv[2], "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        mac.update(chunk)
+with open(sys.argv[3], "wb") as out, open(sys.argv[2], "rb") as f:
+    out.write(b"MMBK2 " + mac.hexdigest().encode() + b"\n")
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        out.write(chunk)
+PY
 chmod 600 "$OUT"
 echo "Backup written: $OUT ($(du -h "$OUT" | cut -f1))"
