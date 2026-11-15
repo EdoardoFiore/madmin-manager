@@ -17,6 +17,8 @@ The previous attempt is in `../madmin-hub-legacy` (reference only, do not copy f
 
 ```bash
 sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com [--ip 10.0.0.5] --ui-allow 10.0.0.0/24
+# update: git pull, then (keeps names, UI filter, users; no password)
+sudo bash scripts/setup-manager.sh
 ```
 
 ## Architecture

@@ -13,6 +13,11 @@
 #   sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash setup-manager.sh --host manager.example.com [--ip 10.0.0.5]
 #        [-u admin] [--ui-port 443] [--agent-port 8443] --ui-allow 10.0.0.0/24,192.0.2.10 | --ui-allow-any
 #
+# Update (rerun over an existing manager, after git pull): database,
+# SECRET_KEY and PKI are kept, and so are the options given the first time:
+#   sudo bash setup-manager.sh
+# The administrator password is needed only when no user exists yet.
+#
 # --ui-allow: source addresses (CIDR, comma separated) allowed on the UI port;
 # everything else gets 403 from nginx. Written to
 # /etc/nginx/snippets/madmin-manager-ui-allow.conf: a reinstall without the
@@ -24,6 +29,9 @@
 #
 # --host / --ip: the name and/or address instances use to reach the manager.
 # They go into the agent endpoint certificate and into every enrollment token.
+# A rerun without them reissues the certificate with the names it has now; a
+# rerun with them must name all of those too (enrolled instances may use any
+# of them), unless --replace-names says that dropping one is intended.
 # Ports to open towards the manager: UI (operators), agent (instances), the
 # support range 9100-9119 (operators; configurable in Settings).
 # =================================================================
@@ -44,6 +52,7 @@ UI_PORT=443
 AGENT_PORT=8443
 UI_ALLOW=""
 UI_ALLOW_ANY="false"
+REPLACE_NAMES="false"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -55,6 +64,7 @@ while [[ "$#" -gt 0 ]]; do
         --agent-port) AGENT_PORT="$2"; shift ;;
         --ui-allow) UI_ALLOW="$2"; shift ;;
         --ui-allow-any) UI_ALLOW_ANY="true" ;;
+        --replace-names) REPLACE_NAMES="true" ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
     shift
@@ -62,27 +72,6 @@ done
 
 if [[ $EUID -ne 0 ]]; then
     log_error "Run as root: sudo bash setup-manager.sh ..."
-    exit 1
-fi
-if [ ${#MANAGER_HOSTS[@]} -eq 0 ] && [ ${#MANAGER_IPS[@]} -eq 0 ]; then
-    log_error "--host and/or --ip required (how instances reach the manager)"
-    exit 1
-fi
-if [ -z "$ADMIN_PASSWORD" ]; then
-    log_error "Administrator password required: MADMIN_MANAGER_ADMIN_PASSWORD=... (or -p)"
-    exit 1
-fi
-# Same rules as the backend (validate_password_strength)
-if [ ${#ADMIN_PASSWORD} -lt 8 ] || ! [[ "$ADMIN_PASSWORD" =~ [A-Z] ]] || ! [[ "$ADMIN_PASSWORD" =~ [0-9] ]] \
-        || ! [[ "$ADMIN_PASSWORD" =~ [^a-zA-Z0-9] ]]; then
-    log_error "Password: at least 8 characters, one uppercase letter, one digit, one special character"
-    exit 1
-fi
-
-# A new manager states who may reach its UI: an open UI turns every
-# account (and every unauthenticated endpoint) into an Internet target
-if [ -z "$UI_ALLOW" ] && [ "$UI_ALLOW_ANY" != "true" ] && [ ! -f /etc/nginx/snippets/madmin-manager-ui-allow.conf ]; then
-    log_error "--ui-allow <CIDR,...> required (or --ui-allow-any for a test manager open to every address)"
     exit 1
 fi
 
@@ -93,6 +82,74 @@ DB_NAME="madmin_manager"
 DB_USER="madmin_manager"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+EXISTING="false"
+[ -f "$INSTALL_DIR/backend/.env" ] && EXISTING="true"
+
+# Names of the current endpoint certificate (an update): DNS SANs as --host,
+# IP SANs as --ip, addresses in the canonical form of Python's ipaddress
+canonical() {
+    python3 -c 'import ipaddress, sys
+try: print(ipaddress.ip_address(sys.argv[1]))
+except ValueError: print(sys.argv[1])' "$1"
+}
+PREV_HOSTS=()
+PREV_IPS=()
+if [ "$EXISTING" = "true" ] && [ -f "$DATA_DIR/pki/server.pem" ]; then
+    SANS="$(openssl x509 -in "$DATA_DIR/pki/server.pem" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr ',' '\n')"
+    while read -r san; do
+        case "$san" in
+            DNS:*) PREV_HOSTS+=("${san#DNS:}") ;;
+            "IP Address:"*) PREV_IPS+=("$(canonical "${san#IP Address:}")") ;;
+        esac
+    done <<< "$SANS"
+fi
+
+if [ ${#MANAGER_HOSTS[@]} -eq 0 ] && [ ${#MANAGER_IPS[@]} -eq 0 ]; then
+    if [ ${#PREV_HOSTS[@]} -eq 0 ] && [ ${#PREV_IPS[@]} -eq 0 ]; then
+        log_error "--host and/or --ip required (how instances reach the manager)"
+        exit 1
+    fi
+    MANAGER_HOSTS=("${PREV_HOSTS[@]}")
+    MANAGER_IPS=("${PREV_IPS[@]}")
+    log_info "Endpoint names kept from the current certificate: ${MANAGER_HOSTS[*]} ${MANAGER_IPS[*]}"
+else
+    GIVEN=" "
+    for n in "${MANAGER_HOSTS[@]}" "${MANAGER_IPS[@]}"; do GIVEN+="$(canonical "$n") "; done
+    MISSING=()
+    for n in "${PREV_HOSTS[@]}" "${PREV_IPS[@]}"; do
+        [[ "$GIVEN" == *" $n "* ]] || MISSING+=("$n")
+    done
+    if [ ${#MISSING[@]} -gt 0 ]; then
+        if [ "$REPLACE_NAMES" != "true" ]; then
+            log_error "The endpoint certificate now also names: ${MISSING[*]}. Instances enrolled with it would"
+            log_error "stop connecting. Pass it again (--host/--ip), omit --host/--ip to keep the current names,"
+            log_error "or add --replace-names if dropping it is intended."
+            exit 1
+        fi
+        log_warning "Dropped from the endpoint certificate: ${MISSING[*]} (--replace-names)"
+    fi
+fi
+
+# The password creates the first administrator: an update does not need it
+if [ -n "$ADMIN_PASSWORD" ]; then
+    # Same rules as the backend (validate_password_strength)
+    if [ ${#ADMIN_PASSWORD} -lt 8 ] || ! [[ "$ADMIN_PASSWORD" =~ [A-Z] ]] || ! [[ "$ADMIN_PASSWORD" =~ [0-9] ]] \
+            || ! [[ "$ADMIN_PASSWORD" =~ [^a-zA-Z0-9] ]]; then
+        log_error "Password: at least 8 characters, one uppercase letter, one digit, one special character"
+        exit 1
+    fi
+elif [ "$EXISTING" != "true" ]; then
+    log_error "Administrator password required on a first install: MADMIN_MANAGER_ADMIN_PASSWORD=..."
+    exit 1
+fi
+
+# A new manager states who may reach its UI: an open UI turns every
+# account (and every unauthenticated endpoint) into an Internet target
+if [ -z "$UI_ALLOW" ] && [ "$UI_ALLOW_ANY" != "true" ] && [ ! -f /etc/nginx/snippets/madmin-manager-ui-allow.conf ]; then
+    log_error "--ui-allow <CIDR,...> required (or --ui-allow-any for a test manager open to every address)"
+    exit 1
+fi
+
 PRIMARY_HOST="${MANAGER_HOSTS[0]:-${MANAGER_IPS[0]}}"
 
 # --- Step 1: packages ---
@@ -110,11 +167,19 @@ fi
 usermod -aG systemd-journal "$SERVICE_USER"
 
 systemctl enable --now postgresql
-if [ -f "$INSTALL_DIR/backend/.env" ]; then
+if [ "$EXISTING" = "true" ]; then
     # Reinstall over an existing manager: keep the database and the keys
     DB_PASSWORD="$(sed -n 's#^DATABASE_URL=postgresql+asyncpg://[^:]*:\([^@]*\)@.*#\1#p' "$INSTALL_DIR/backend/.env")"
     SECRET_KEY="$(sed -n 's/^SECRET_KEY=//p' "$INSTALL_DIR/backend/.env")"
     log_warning "Existing installation found: database, SECRET_KEY and PKI are kept."
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        # Checked before anything is deployed (an earlier run may have stopped before step 7)
+        USERS="$(sudo -u postgres psql -d "$DB_NAME" -Atc 'SELECT count(*) FROM "user"' 2>/dev/null || echo 0)"
+        if [ "${USERS:-0}" = "0" ]; then
+            log_error "No user in the database yet: rerun with MADMIN_MANAGER_ADMIN_PASSWORD=... to create the administrator"
+            exit 1
+        fi
+    fi
 else
     DB_PASSWORD="$(openssl rand -hex 16)"
     SECRET_KEY="$(openssl rand -hex 32)"
@@ -409,16 +474,20 @@ fi
 
 # --- Step 7: administrator and agent URL ---
 log_info "Step 7/7: Administrator and settings..."
-# The password reaches curl on stdin, never in a process's arguments
-INIT_HTTP=$(MM_INIT_USER="$ADMIN_USERNAME" MM_INIT_PASSWORD="$ADMIN_PASSWORD" python3 -c \
-        "import json,os; print(json.dumps({'username': os.environ['MM_INIT_USER'], 'password': os.environ['MM_INIT_PASSWORD']}))" \
-    | curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/auth/init \
-        -H "Content-Type: application/json" --data-binary @-)
-case "$INIT_HTTP" in
-    201) log_success "Administrator created: $ADMIN_USERNAME" ;;
-    409) log_warning "An administrator already exists: not created again" ;;
-    *)   log_error "Administrator not created (HTTP $INIT_HTTP)"; exit 1 ;;
-esac
+if [ -z "$ADMIN_PASSWORD" ]; then
+    log_info "Administrator: existing users kept"
+else
+    # The password reaches curl on stdin, never in a process's arguments
+    INIT_HTTP=$(MM_INIT_USER="$ADMIN_USERNAME" MM_INIT_PASSWORD="$ADMIN_PASSWORD" python3 -c \
+            "import json,os; print(json.dumps({'username': os.environ['MM_INIT_USER'], 'password': os.environ['MM_INIT_PASSWORD']}))" \
+        | curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/auth/init \
+            -H "Content-Type: application/json" --data-binary @-)
+    case "$INIT_HTTP" in
+        201) log_success "Administrator created: $ADMIN_USERNAME" ;;
+        409) log_warning "An administrator already exists: not created again" ;;
+        *)   log_error "Administrator not created (HTTP $INIT_HTTP)"; exit 1 ;;
+    esac
+fi
 
 AGENT_URL="https://$PRIMARY_HOST:$AGENT_PORT"
 if (cd "$INSTALL_DIR/backend" && sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m core.settings agent-url --if-empty "$AGENT_URL"); then

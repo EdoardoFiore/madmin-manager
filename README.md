@@ -67,23 +67,22 @@ Al termine lo script stampa l'URL della UI, l'URL agent e il **fingerprint della
 
 ## Aggiornamento e reinstallazione
 
-Lo script si può rilanciare sopra un'installazione esistente:
+Lo script si può rilanciare sopra un'installazione esistente, ed è così che si aggiorna il manager (prima un backup con `manager-backup.sh`):
 
 ```bash
-cd madmin-manager && git pull
-sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com --ip 10.0.0.5 --ui-allow 10.0.0.0/24
+cd madmin-manager && git pull --ff-only
+sudo bash scripts/setup-manager.sh
 ```
 
 Se trova `/opt/madmin-manager/backend/.env`:
 
 - tiene **database, password del database e `SECRET_KEY`**;
-- tiene la **CA** (le istanze la hanno nel pin) e rigenera solo il certificato dell'endpoint con i `--host`/`--ip` passati, quindi vanno ripassati tutti;
-- ricopia il codice, aggiorna le dipendenze e riscrive nginx e systemd;
-- non ricrea l'amministratore se ne esiste già uno (avviso, non errore).
+- tiene la **CA** (le istanze la hanno nel pin) e rigenera solo il certificato dell'endpoint. Senza `--host`/`--ip` usa i nomi del certificato attuale; con `--host`/`--ip` devono esserci anche tutti quelli attuali (le istanze registrate possono usarne uno qualsiasi), altrimenti si ferma, a meno di `--replace-names` per toglierne uno di proposito;
+- tiene il filtro della UI se non si passa `--ui-allow`;
+- ricopia il codice, aggiorna le dipendenze e riscrive nginx e systemd; all'avvio il manager applica i passi di schema (`backend/core/migrations/`);
+- non chiede la password dell'amministratore: serve solo se nel database non c'è ancora nessun utente.
 
 I file eliminati dal repository restano in `/opt/madmin-manager/backend/` perché la copia non cancella nulla. Di solito non è un problema. Se serve una copia pulita, eliminare `/opt/madmin-manager/backend/` e `/opt/madmin-manager/frontend/` tranne il `.env`, prima di rilanciare.
-
-Non esistono migrazioni: all'avvio vengono create solo le tabelle mancanti. Una colonna aggiunta a una tabella esistente richiede un intervento manuale sul database.
 
 ### Solo codice backend
 
