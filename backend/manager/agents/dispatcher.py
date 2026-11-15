@@ -123,15 +123,15 @@ async def run_command(session, instance_id: str, name: str, args: Optional[dict]
     )
     session.add(cmd)
     await session.commit()
-    fut = registry.waiter(cmd.id)
+    fut = registry.waiter(instance_id, cmd.id)
     if not _send(cmd):
-        registry.drop_waiter(cmd.id)
+        registry.drop_waiter(instance_id, cmd.id)
         raise HTTPException(409, "Istanza non connessa")
     await _mark_sent([cmd.id])
     try:
         result = await asyncio.wait_for(fut, timeout)
     except asyncio.TimeoutError:
-        registry.drop_waiter(cmd.id)
+        registry.drop_waiter(instance_id, cmd.id)
         raise HTTPException(504, "L'istanza non ha risposto in tempo")
     if not result.get("ok"):
         code, message = protocol.error_parts(result)
@@ -147,9 +147,9 @@ async def send_ephemeral(instance_id: str, name: str, args: dict, operator: str 
     if conn is None or name not in conn.capabilities:
         raise ConnectionError("istanza non connessa o comando non supportato")
     cmd_id = str(uuid.uuid4())
-    fut = registry.waiter(cmd_id)
+    fut = registry.waiter(instance_id, cmd_id)
     if not conn.send(_frame(cmd_id, name, args, operator, datetime.utcnow() + timedelta(seconds=ttl))):
-        registry.drop_waiter(cmd_id)
+        registry.drop_waiter(instance_id, cmd_id)
         raise ConnectionError("coda dell'istanza piena")
     return fut
 
@@ -187,7 +187,7 @@ async def handle_progress(instance_id: str, cmd_id: str, payload: dict) -> None:
 
 
 async def handle_result(instance_id: str, cmd_id: str, payload: dict) -> None:
-    registry.resolve(cmd_id, payload)
+    registry.resolve(instance_id, cmd_id, payload)
     ok = bool(payload.get("ok"))
     async with async_session_maker() as session:
         cmd = (await session.execute(

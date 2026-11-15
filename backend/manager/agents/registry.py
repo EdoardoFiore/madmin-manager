@@ -52,8 +52,8 @@ class AgentConnection:
 class Registry:
     def __init__(self) -> None:
         self._conns: Dict[str, AgentConnection] = {}
-        # cmd id -> future resolved with the cmd_result payload
-        self._waiters: Dict[str, asyncio.Future] = {}
+        # (instance id, cmd id) -> future resolved with the cmd_result payload
+        self._waiters: Dict[tuple, asyncio.Future] = {}
 
     def get(self, instance_id: str) -> Optional[AgentConnection]:
         return self._conns.get(instance_id)
@@ -81,28 +81,31 @@ class Registry:
             await conn.close(code, reason)
 
     # --- Waiting for results ---
+    # Keyed by instance and command id: a result resolves a waiter only when
+    # it comes from the instance the command was sent to.
 
-    def waiter(self, cmd_id: str) -> asyncio.Future:
-        fut = self._waiters.get(cmd_id)
+    def waiter(self, instance_id: str, cmd_id: str) -> asyncio.Future:
+        key = (instance_id, cmd_id)
+        fut = self._waiters.get(key)
         if fut is None or fut.done():
             fut = asyncio.get_running_loop().create_future()
-            self._waiters[cmd_id] = fut
+            self._waiters[key] = fut
             # A caller that gives up (wait_for timeout cancels the future) must
             # not leave the entry behind until a result that may never come
-            fut.add_done_callback(lambda f, k=cmd_id: self._forget(k, f))
+            fut.add_done_callback(lambda f, k=key: self._forget(k, f))
         return fut
 
-    def _forget(self, cmd_id: str, fut: asyncio.Future) -> None:
-        if self._waiters.get(cmd_id) is fut:
-            del self._waiters[cmd_id]
+    def _forget(self, key: tuple, fut: asyncio.Future) -> None:
+        if self._waiters.get(key) is fut:
+            del self._waiters[key]
 
-    def resolve(self, cmd_id: str, payload: dict) -> None:
-        fut = self._waiters.pop(cmd_id, None)
+    def resolve(self, instance_id: str, cmd_id: str, payload: dict) -> None:
+        fut = self._waiters.pop((instance_id, cmd_id), None)
         if fut is not None and not fut.done():
             fut.set_result(payload)
 
-    def drop_waiter(self, cmd_id: str) -> None:
-        self._waiters.pop(cmd_id, None)
+    def drop_waiter(self, instance_id: str, cmd_id: str) -> None:
+        self._waiters.pop((instance_id, cmd_id), None)
 
 
 registry = Registry()
