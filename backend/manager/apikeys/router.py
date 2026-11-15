@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from core.auth.dependencies import require_permission
 from core.auth.models import User
+from core.auth.router import require_step_up
 from core.database import get_session
 
 from manager.models import ApiKey
@@ -44,6 +45,7 @@ class KeyCreate(BaseModel):
     scopes: List[str] = Field(min_length=1)
     allowed_cidrs: str = Field(default="", max_length=1000)
     days: Optional[int] = Field(default=365, ge=1, le=3650)  # None = no expiry
+    totp: str = Field(default="", max_length=12)             # the caller's fresh 2FA code
 
     @field_validator("scopes")
     @classmethod
@@ -60,10 +62,17 @@ class KeyCreate(BaseModel):
 
 
 @router.post("", status_code=201)
-async def create_key(body: KeyCreate, session: AsyncSession = Depends(get_session),
+async def create_key(body: KeyCreate, request: Request, session: AsyncSession = Depends(get_session),
                      user: User = Depends(require_permission("manager.manage"))):
+    """A key outlives the session that made it, and provisioning.enroll can
+    re-enroll any instance with an external reference (its certificate and
+    backup passphrase go to whoever enrolls): a fresh 2FA code, and that
+    scope only from stated networks."""
     if (await session.execute(select(ApiKey).where(ApiKey.name == body.name))).first():
         raise HTTPException(409, "Esiste già una chiave con questo nome")
+    if "provisioning.enroll" in body.scopes and not body.allowed_cidrs:
+        raise HTTPException(400, "Una chiave con provisioning.enroll richiede le reti ammesse")
+    await require_step_up(session, user, body.totp, request)
     key_id, secret, full = new_key()
     row = ApiKey(id=key_id, name=body.name, secret_hash=hash_secret(secret),
                  scopes_json=json.dumps(body.scopes), allowed_cidrs=body.allowed_cidrs,

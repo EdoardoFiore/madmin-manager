@@ -5,7 +5,7 @@
 import { apiGet, apiPost } from '../api.js';
 import { escapeHtml, showToast, confirmDialog, actionAttrs, registerActions, loadingSpinner } from '../utils.js';
 import { setPageActions, checkPermission } from '../app.js';
-import { fmtDate, formModal, secretModal, copyBlock, enrollTokenHelp, formData, groupPath, labelBadges,
+import { fmtDate, otpField, formModal, secretModal, copyBlock, enrollTokenHelp, formData, groupPath, labelBadges,
          registrationFieldsHtml, registrationFieldsValue, field, formSection, notice, confirmAction,
          fieldError } from './manager-common.js';
 
@@ -193,8 +193,9 @@ async function keyModal() {
         </div>
         <div class="row g-2">
             ${field('allowed_cidrs', 'Reti ammesse', { mono: true, col: 'col-md-8', format: 'reti CIDR separate da virgola',
-                example: '10.0.0.0/8, 192.0.2.10', hint: 'vuoto = tutte' })}
+                example: '10.0.0.0/8, 192.0.2.10', hint: 'obbligatorie con provisioning.enroll; vuoto = tutte' })}
             ${field('days', 'Validità in giorni', { type: 'number', min: 1, max: 3650, value: 365, col: 'col-md-4', hint: 'vuoto = senza scadenza' })}
+            ${otpField(undefined, 'col-md-6')}
         </div>`,
     async (form) => {
         const d = formData(form);
@@ -205,7 +206,7 @@ async function keyModal() {
         const res = await apiPost('/apikeys', {
             name: d.name, allowed_cidrs: d.allowed_cidrs,
             scopes: [...form.querySelectorAll('input[name=scope]:checked')].map(i => i.value),
-            days: d.days ? Number(d.days) : null,
+            days: d.days ? Number(d.days) : null, totp: d.totp,
         });
         secretModal('Chiave API', `
             <p class="text-muted mb-3">Mostrata <strong>una sola volta</strong>: salvala subito nel sistema di provisioning.
