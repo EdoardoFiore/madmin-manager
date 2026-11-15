@@ -14,6 +14,13 @@ Backoff schedule:
 - Each after  → 10 minute block
 
 Counters reset on successful login.
+
+Username keys ("u:<name>") only ever get the first, short block, once per
+INITIAL_THRESHOLD failures: they are counted from any address, so an
+escalating block there let anyone keep a chosen account (a superuser)
+locked out indefinitely, its owner's correct password included. Guessing
+from many addresses stays slow (INITIAL_THRESHOLD every 30 s per account),
+and every address escalates on its own key.
 """
 import time
 import threading
@@ -32,9 +39,12 @@ CLEANUP_INTERVAL = 600      # Clean stale entries every 10 minutes
 STALE_AFTER = 3600           # Remove entries inactive for 1 hour
 
 
+USER_KEY_PREFIX = "u:"
+
+
 def user_key(username: str) -> str:
     """Rate-limit key of a login target (fits LoginAttempt.ip, 64 chars)."""
-    return f"u:{(username or '').lower()[:60]}"
+    return f"{USER_KEY_PREFIX}{(username or '').lower()[:60]}"
 
 
 class _Record:
@@ -132,8 +142,9 @@ class LoginRateLimiter:
                 rec = self._records.setdefault(key, _Record())
                 rec.attempts += 1
                 rec.last_attempt = now
-                if self._should_block(rec):
-                    duration = BLOCK_DURATIONS[min(rec.block_count, len(BLOCK_DURATIONS) - 1)]
+                if self._should_block(key, rec):
+                    duration = (BLOCK_DURATIONS[0] if key.startswith(USER_KEY_PREFIX)
+                                else BLOCK_DURATIONS[min(rec.block_count, len(BLOCK_DURATIONS) - 1)])
                     rec.blocked_until = now + duration
                     rec.block_count += 1
                     logger.warning(
@@ -142,7 +153,9 @@ class LoginRateLimiter:
                     )
 
     @staticmethod
-    def _should_block(rec: _Record) -> bool:
+    def _should_block(key: str, rec: _Record) -> bool:
+        if key.startswith(USER_KEY_PREFIX):
+            return rec.attempts >= INITIAL_THRESHOLD * (rec.block_count + 1)
         if rec.block_count == 0:
             return rec.attempts >= INITIAL_THRESHOLD
         if rec.block_count == 1:
