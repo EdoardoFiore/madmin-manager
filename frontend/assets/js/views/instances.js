@@ -1213,6 +1213,14 @@ function rescueCard(i) {
 const UPDATE_RESULTS = { running: ['bg-info-lt', 'in corso'], verifying: ['bg-info-lt', 'in verifica'],
     ok: ['bg-success-lt', 'riuscito'], rolled_back: ['bg-warning-lt', 'annullato (rollback)'], failed: ['bg-danger-lt', 'fallito'] };
 
+/** Whether the instance's updater would accept release r from `installed` (madmin-update check_applicable). */
+function releaseApplicable(r, installed) {
+    if (!installed) return true;
+    const m = r.manifest || {};
+    if (m.min_from && cmpVersion(installed, m.min_from) < 0) return false;
+    return cmpVersion(r.version, installed) >= 0 || (m.allow_downgrade_from || []).includes(installed);
+}
+
 function updateText(u) {
     if (!u || !u.release_id) return '-';
     const [cls, label] = UPDATE_RESULTS[u.result] || ['bg-secondary-lt', escapeHtml(u.result || '?')];
@@ -1504,9 +1512,16 @@ registerActions({
     },
     managerUpdate: async () => {
         let releases;
-        try { releases = (await apiGet('/releases')).filter(r => r.build !== current.build); }
+        let all;
+        try { all = (await apiGet('/releases')).filter(r => r.build !== current.build); }
         catch (e) { showToast(e.message, 'error'); return; }
-        if (!releases.length) { showToast('Nessuna release disponibile: caricala in Release', 'warning'); return; }
+        // Only what the instance's updater accepts (same rule as releases/service.not_applicable)
+        releases = all.filter(r => releaseApplicable(r, current.madmin_version));
+        if (!releases.length) {
+            showToast(all.length ? `Nessuna release applicabile: le altre sono più vecchie di ${current.madmin_version} senza downgrade ammesso`
+                                 : 'Nessuna release disponibile: caricala in Release', 'warning');
+            return;
+        }
         formModal('Aggiorna MADMIN', `
             ${notice('info', '', [
                 ['ti-download', 'L\'istanza scarica la release dal manager e ne <b>verifica la firma</b>.'],

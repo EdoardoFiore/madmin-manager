@@ -91,6 +91,14 @@ async def _start_target(session, rollout: Rollout, target: RolloutTarget, instan
             target.finished_at = datetime.utcnow()
             session.add(target)
             return
+        from manager.releases.service import not_applicable
+        refused = not_applicable(json.loads(rel.manifest_json), instance.madmin_version) if rel else ""
+        if refused:
+            # The updater would refuse it: not sent, not counted as a failure
+            target.status, target.detail = "skipped", f"release non applicabile: {refused}"[:1000]
+            target.finished_at = datetime.utcnow()
+            session.add(target)
+            return
         cmd_args = {"release_id": rel.id, "sha256": rel.sha256}
         if args.get("deadline"):
             cmd_args["deadline"] = args["deadline"]

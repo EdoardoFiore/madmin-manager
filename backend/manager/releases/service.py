@@ -123,7 +123,31 @@ def manifest_summary(manifest_json: str) -> dict:
         m = json.loads(manifest_json or "{}")
     except ValueError:
         return {}
-    return {k: m.get(k) for k in ("created", "min_from", "os", "layout", "schema", "modules", "apt")}
+    return {k: m.get(k) for k in ("created", "min_from", "allow_downgrade_from", "os", "layout", "schema",
+                                  "modules", "apt")}
+
+
+def semver(v: str) -> Tuple[int, int, int]:
+    """Same parsing as madmin-update: x.y.z at the start, else 0.0.0."""
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", v or "")
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+
+def not_applicable(manifest: dict, installed_version: str) -> str:
+    """Why the instance's updater would refuse this release given the
+    installed MADMIN version ("" = it would go on): the checks of
+    madmin-update check_applicable that depend on the version, so the
+    manager does not send an update that can only fail. The instance
+    checks again (it alone decides): an unknown version passes here."""
+    if not installed_version:
+        return ""
+    new_v = str(manifest.get("version", "0.0.0"))
+    if semver(installed_version) < semver(str(manifest.get("min_from", "0.0.0"))):
+        return f"l'istanza ha {installed_version}, la release richiede almeno {manifest.get('min_from')}: reinstallarla"
+    if semver(new_v) < semver(installed_version) and \
+            installed_version not in (manifest.get("allow_downgrade_from") or []):
+        return f"downgrade da {installed_version} a {new_v} non ammesso dalla release"
+    return ""
 
 
 def remove_file(release_id: str) -> None:

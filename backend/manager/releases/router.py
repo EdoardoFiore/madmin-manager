@@ -141,6 +141,9 @@ async def update_instance(instance_id: str, body: UpdateIn, session: AsyncSessio
     manifest = json.loads(row.manifest_json)
     if os_id and os_id not in (manifest.get("os") or []):
         raise HTTPException(409, f"Release per {', '.join(manifest.get('os') or [])}, l'istanza è {os_id}")
+    refused = service.not_applicable(manifest, instance.madmin_version)
+    if refused:
+        raise HTTPException(409, f"Release non applicabile: {refused}")
     check_capability(instance.id, protocol.CMD_UPDATE)
     args = {"release_id": row.id, "sha256": row.sha256}
     if body.deadline:
