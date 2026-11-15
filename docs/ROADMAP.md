@@ -504,7 +504,7 @@ Today a stolen superuser `rw` account can open a superuser UI session and root S
 **Step-up at every opening.** Opening a support session (UI or SSH) asks for a fresh TOTP code, whatever the age of the login session. A code is accepted once: the last accepted time step is stored per user, so a code seen over the operator's shoulder or replayed from a stolen session is refused. A user without TOTP cannot open support.
 
 - [x] `POST` of a support session takes `totp`; check and replay guard in `core/auth` (`require_step_up`); UI prompt. Backup codes are not accepted.
-- [x] Failures count toward the existing lockout (5 → 2FA locked, sessions revoked).
+- [x] Failures count toward the existing lockout (5 → 2FA locked, sessions revoked). Since 1.4.0: 5 wrong codes suspend the 2FA for 15 minutes and mail the superusers, never a permanent lock (security audit 2026-11-15, F2).
 
 **SSH only to the user's registered public key.** Each user stores SSH public keys (only the public half; several, each with a name and last use). A support SSH session signs the certificate for one of the user's **approved** keys; a key can no longer be pasted when the session is opened. The key id in the certificate names the user, so the instance's sshd log says who connected.
 

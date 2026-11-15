@@ -89,21 +89,32 @@ def verify_totp(secret: str, code: str) -> bool:
     return totp.verify(code, valid_window=0)
 
 
-def check_totp(user, secret: str, code: str) -> bool:
+async def check_totp(session, user, secret: str, code: str) -> bool:
     """
     Verify a TOTP code for `user` and consume it.
 
     A code is valid for its whole 30-second step: without remembering the
     last step used, a code seen over someone's shoulder or in a log could be
-    replayed within that window. The step is stored on the user (the caller's
-    commit persists it); a code of the same step, or an older one, is refused.
+    replayed within that window. The step is consumed with one conditional
+    UPDATE, committed here: reading it and writing it at the request's
+    commit let two concurrent requests with the same code both pass. A code
+    of the same step, or an older one, is refused.
     """
+    from sqlalchemy import or_, update
+    from .models import User
     totp = pyotp.TOTP(secret)
     if not totp.verify(code, valid_window=0):
         return False
     step = totp.timecode(datetime.now(timezone.utc))
-    if user.totp_last_step is not None and step <= user.totp_last_step:
+    result = await session.execute(
+        update(User).where(User.id == user.id,
+                           or_(User.totp_last_step.is_(None), User.totp_last_step < step))
+        .values(totp_last_step=step)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
         return False
+    await session.commit()
     user.totp_last_step = step
     return True
 

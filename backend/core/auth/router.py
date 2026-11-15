@@ -4,6 +4,7 @@ MADMIN Authentication Router
 API endpoints for authentication and user management.
 """
 import json
+import time
 import asyncio
 from typing import List, Optional, Dict
 from datetime import timedelta
@@ -42,38 +43,69 @@ from .rate_limiter import login_rate_limiter, user_key
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 settings = get_settings()
 
-# Per-user 2FA failure tracking (in-memory; temporary tokens expire in 5 min anyway)
-_2fa_attempts: Dict[str, int] = {}  # str(user_id) → attempt count
+# Per-user 2FA failures (in memory). At _2FA_MAX_ATTEMPTS the 2FA of the
+# account is suspended for _2FA_LOCK_SECONDS and every superuser is told.
+# Never a permanent lock from outside: whoever had the password could
+# otherwise lock a superuser out again after every reset. Five codes every
+# 15 minutes leave a 6-digit code out of reach of guessing.
+_2fa_attempts: Dict[str, int] = {}          # str(user_id) → failures since the last success
+_2fa_locked_until: Dict[str, float] = {}    # str(user_id) → time.monotonic() of the end
 _2FA_MAX_ATTEMPTS = 5
+_2FA_LOCK_SECONDS = 900
 
 
-async def require_step_up(session: AsyncSession, user: User, code: Optional[str]) -> None:
+def _check_2fa_suspended(user: User) -> None:
+    """429 while the account's 2FA is suspended after too many wrong codes."""
+    until = _2fa_locked_until.get(str(user.id), 0)
+    remaining = int(until - time.monotonic())
+    if remaining > 0:
+        raise HTTPException(429, f"Troppi codici 2FA errati: riprovare tra {remaining // 60 + 1} minuti",
+                            headers={"Retry-After": str(remaining)})
+    _2fa_locked_until.pop(str(user.id), None)
+
+
+def _2fa_failure(user: User, request: Optional[Request]) -> int:
+    """Count a wrong code; at the limit suspend the 2FA. Returns the count (0 = just suspended)."""
+    key = str(user.id)
+    attempts = _2fa_attempts.get(key, 0) + 1
+    if attempts < _2FA_MAX_ATTEMPTS:
+        _2fa_attempts[key] = attempts
+        return attempts
+    _2fa_attempts.pop(key, None)
+    _2fa_locked_until[key] = time.monotonic() + _2FA_LOCK_SECONDS
+    from manager.notify import security
+    security(f"2FA di {user.username} sospesa: {_2FA_MAX_ATTEMPTS} codici errati",
+             f"Sono stati inseriti {_2FA_MAX_ATTEMPTS} codici 2FA errati per {user.username}: la 2FA dell'account "
+             f"è sospesa per {_2FA_LOCK_SECONDS // 60} minuti. Se non è stato {user.username}, la sua password "
+             "è nota a qualcun altro: va cambiata.", request)
+    return 0
+
+
+def _2fa_success(user: User) -> None:
+    _2fa_attempts.pop(str(user.id), None)
+
+
+async def require_step_up(session: AsyncSession, user: User, code: Optional[str],
+                          request: Optional[Request] = None) -> None:
     """
     A fresh TOTP code for a sensitive action (support access), whatever the
     age of the login session. Authenticator codes only, never backup codes; a
     code already used is refused (check_totp). Failures count with the login
-    2FA failures: at the limit the 2FA is locked and every session revoked.
-    The caller commits on success (the consumed step is stored on the user).
+    2FA failures (see _2fa_failure). The consumed step is committed here.
     """
     if not user.totp_enabled or not user.totp_secret:
         raise HTTPException(403, "Attivare la 2FA nel profilo per questa operazione")
     if user.totp_locked:
         raise HTTPException(403, "2FA bloccata: contattare un amministratore")
+    _check_2fa_suspended(user)
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
-    if code and check_totp(user, plain_secret, code.strip()):
-        _2fa_attempts.pop(str(user.id), None)
-        session.add(user)
+    if code and await check_totp(session, user, plain_secret, code.strip()):
+        _2fa_success(user)
         return
-    user_id_str = str(user.id)
-    attempts = _2fa_attempts.get(user_id_str, 0) + 1
-    _2fa_attempts[user_id_str] = attempts
-    if attempts >= _2FA_MAX_ATTEMPTS:
-        user.totp_locked = True
-        session.add(user)
-        service.revoke_sessions(user)
-        await session.commit()
-        _2fa_attempts.pop(user_id_str, None)
-        raise HTTPException(401, f"Troppi codici 2FA errati ({_2FA_MAX_ATTEMPTS}): 2FA bloccata e sessioni chiuse")
+    attempts = _2fa_failure(user, request)
+    if not attempts:
+        raise HTTPException(429, f"Troppi codici 2FA errati ({_2FA_MAX_ATTEMPTS}): 2FA sospesa per "
+                                 f"{_2FA_LOCK_SECONDS // 60} minuti")
     raise HTTPException(403, f"Codice 2FA non valido o già usato ({attempts}/{_2FA_MAX_ATTEMPTS})")
 
 
@@ -379,43 +411,30 @@ async def verify_2fa_login(
             detail="Invalid or expired 2FA token"
         )
 
-    # Refuse locked accounts immediately
+    # Refuse locked accounts immediately (locked by an administrator)
     if user.totp_locked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="2FA access is locked. Contact an administrator to unlock the account."
         )
-
-    user_id_str = str(user.id)
+    _check_2fa_suspended(user)
 
     # Verify TOTP code first (a code already used is refused: see check_totp)
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
-    if not check_totp(user, plain_secret, code):
+    if not await check_totp(session, user, plain_secret, code):
         # Try backup code (up to 8 bcrypt checks: off the event loop)
         valid, new_codes = await asyncio.to_thread(verify_backup_code, user.backup_codes or "[]", code)
         if not valid:
             # Record failures
             await login_rate_limiter.record_failure(session, client_ip)
-            attempts = _2fa_attempts.get(user_id_str, 0) + 1
-            _2fa_attempts[user_id_str] = attempts
-
-            if attempts >= _2FA_MAX_ATTEMPTS:
-                # Lock the user's 2FA — superuser must reset it
-                user.totp_locked = True
-                session.add(user)
-                # Also revoke the temporary token and every session
-                service.revoke_sessions(user)
-                await session.commit()
-                _2fa_attempts.pop(user_id_str, None)
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=(
-                        f"Troppi tentativi falliti ({_2FA_MAX_ATTEMPTS}/{_2FA_MAX_ATTEMPTS}). "
-                        "La 2FA è stata bloccata. Contatta un amministratore."
-                    )
-                )
-
             await session.commit()  # keep the recorded failure (see /token)
+            attempts = _2fa_failure(user, request)
+            if not attempts:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=(f"Troppi codici errati ({_2FA_MAX_ATTEMPTS}): 2FA sospesa per "
+                            f"{_2FA_LOCK_SECONDS // 60} minuti. I superuser sono stati avvisati.")
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid 2FA code ({attempts}/{_2FA_MAX_ATTEMPTS} attempts)"
@@ -425,7 +444,7 @@ async def verify_2fa_login(
         session.add(user)
 
     # Success — clear per-user attempt counter
-    _2fa_attempts.pop(user_id_str, None)
+    _2fa_success(user)
     await login_rate_limiter.record_success(session, client_ip)
 
     # 2FA satisfied — now gate on password change if required
@@ -541,7 +560,7 @@ async def complete_2fa_setup(
         )
 
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
-    if not check_totp(user, plain_secret, data.code):
+    if not await check_totp(session, user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code. Make sure your device time is correct."
@@ -923,7 +942,7 @@ async def enable_2fa(
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
-    if not check_totp(current_user, plain_secret, data.code):
+    if not await check_totp(session, current_user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code. Make sure your device time is correct."
@@ -993,7 +1012,7 @@ async def regenerate_backup_codes(
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
-    if not check_totp(current_user, plain_secret, data.code):
+    if not await check_totp(session, current_user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code"
