@@ -68,6 +68,12 @@ async def approved_key(session, user, key_id: str) -> UserSshKey:
     return key
 
 
+def support_principal(instance_id: str) -> str:
+    """The SSH principal the instance accepts for root during a grant
+    (same rule as sshd.principal in the MADMIN agent)."""
+    return f"madmin-support-{instance_id}"
+
+
 def stop_listener(session_id: str) -> None:
     tunnels.stop_listener(session_id)
 
@@ -161,7 +167,15 @@ async def open_ssh(session, instance: Instance, operator: str, minutes: int,
     # new expiry; closing the old listener cuts its connections, the only way in.
     for p in previous:
         await close(session, p, by=operator, status="replaced")
-    principal = str(data.get("principal", ""))
+    # The principal is the manager's to name, never the instance's: one CA
+    # signs for every instance, and a certificate for another instance's
+    # principal (madmin-support-<id>, see the agent's sshd.py) would be
+    # valid there while the operator thinks it is for this one
+    principal = support_principal(instance.id)
+    if str(data.get("principal", "")) != principal:
+        logger.warning("Instance %s answered support.ssh.grant with principal %r (expected %s)",
+                       instance.id, str(data.get("principal", ""))[:100], principal)
+        raise HTTPException(502, "L'istanza ha risposto con un principal SSH inatteso: accesso non aperto")
     cert = pki.sign_ssh_user_cert(public_key, principal, f"{operator} {key.fingerprint} {instance.id}", expires_at)
     row = SupportSession(
         instance_id=instance.id, kind="ssh", operator=operator, reason=reason, port=port,
