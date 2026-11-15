@@ -418,6 +418,14 @@ def _notify_failures(name: str, instance_id: str, update, kernel) -> None:
                f"L'istanza usa di nuovo {kernel.get('previous')}.")
 
 
+def _numeric_stats(stats: dict) -> dict:
+    """heartbeat.stats are numbers (cpu_percent, mem_percent, disk_percent):
+    anything else is dropped, so an instance cannot put markup or bulk in
+    what the UI shows for it."""
+    return {str(k)[:40]: v for k, v in list(stats.items())[:20]
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
 async def _handle_heartbeat(conn: AgentConnection, payload: dict) -> None:
     async with async_session_maker() as session:
         instance = await session.get(Instance, conn.instance_id)
@@ -426,7 +434,7 @@ async def _handle_heartbeat(conn: AgentConnection, payload: dict) -> None:
         instance.last_seen_at = datetime.utcnow()
         stats = payload.get("stats")
         if isinstance(stats, dict):
-            instance.stats_json = json.dumps(stats)[:4096]
+            instance.stats_json = json.dumps(_numeric_stats(stats))
         facts = payload.get("facts")
         if isinstance(facts, dict):
             apply_facts(instance, facts)

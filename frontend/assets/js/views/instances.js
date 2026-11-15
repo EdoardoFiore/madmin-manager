@@ -662,7 +662,7 @@ async function overview(el, i) {
                     ['Ultimo contatto', `${fmtDate(i.last_seen_at)} (${relTime(i.last_seen_at)})`],
                     ['Registrata', fmtDate(i.enrolled_at)],
                     ['Certificato fino al', fmtDate(i.certificate_expires_at)],
-                    ['Ultimi CPU / RAM / disco', st.cpu_percent !== undefined ? `${st.cpu_percent}% / ${st.mem_percent}% / ${st.disk_percent}%` : '-'],
+                    ['Ultimi CPU / RAM / disco', st.cpu_percent !== undefined ? escapeHtml(`${st.cpu_percent}% / ${st.mem_percent}% / ${st.disk_percent}%`) : '-'],
                     ['Gruppo', escapeHtml(groupPath(groups, i.group_id) || 'sito principale')],
                     ['Riferimento esterno', `<span class="font-monospace">${escapeHtml(i.external_ref || '-')}</span>`],
                     ['Backup pianificati', i.backup_enabled ? 'sì' : 'no'],
@@ -1196,7 +1196,7 @@ function rescueCard(i) {
     return `<div class="card-body border-bottom bg-danger-lt">
         <h4><i class="ti ti-lifebuoy me-2"></i>Rescue: MADMIN non risponde</h4>
         <div class="small">Ultimo report ${fmtDate(i.rescue_at)} · release ${escapeHtml(r.current || '?')}
-            (precedente ${escapeHtml(r.previous || '-')}) · ${escapeHtml(r.unit || '')} · disco libero ${r.disk_free_mb ?? '?'} MB</div>
+            (precedente ${escapeHtml(r.previous || '-')}) · ${escapeHtml(r.unit || '')} · disco libero ${escapeHtml(r.disk_free_mb ?? '?')} MB</div>
         ${act.status ? `<div class="mt-2">Azione <strong>${escapeHtml(act.action)}</strong> ${act.release_id ? escapeHtml(act.release_id) : ''}:
             ${act.status === 'pending' ? 'in attesa del prossimo report (entro 5 minuti)' : `inviata ${fmtDate(act.sent_at)}`}
             ${act.status === 'pending' && manage ? `<button class="btn btn-sm btn-link" ${actionAttrs('managerRescueCancel')}>Annulla</button>` : ''}</div>` : ''}
@@ -1215,7 +1215,7 @@ const UPDATE_RESULTS = { running: ['bg-info-lt', 'in corso'], verifying: ['bg-in
 
 function updateText(u) {
     if (!u || !u.release_id) return '-';
-    const [cls, label] = UPDATE_RESULTS[u.result] || ['bg-secondary-lt', u.result || '?'];
+    const [cls, label] = UPDATE_RESULTS[u.result] || ['bg-secondary-lt', escapeHtml(u.result || '?')];
     return `<span class="font-monospace">${escapeHtml(u.release_id)}</span> <span class="badge ${cls}">${label}</span>
         ${u.result === 'running' || u.result === 'verifying' ? `<span class="text-muted small">(${escapeHtml(u.step || '')})</span>` : ''}
         <div class="text-muted small">${fmtDate(u.updated_at)}${u.detail ? ` · ${escapeHtml(u.detail)}` : ''}</div>`;
