@@ -16,6 +16,9 @@ from manager.agents.registry import registry
 logger = logging.getLogger(__name__)
 
 _MAX_FACTS = 64 * 1024
+# Interface addresses taken from one report: every new one is a history row
+# that stays, so a report must not be able to add thousands at a time
+_MAX_ADDRESSES = 64
 
 
 def _clip(value, n: int) -> str:
@@ -23,20 +26,29 @@ def _clip(value, n: int) -> str:
 
 
 def _interface_addresses(facts: dict) -> Iterable[Tuple[str, str]]:
-    for iface in facts.get("interfaces") or []:
+    found = 0
+    interfaces = facts.get("interfaces")
+    for iface in interfaces if isinstance(interfaces, list) else []:
         if not isinstance(iface, dict):
             continue
         name = _clip(iface.get("name"), 50)
-        for addr in iface.get("ipv4") or []:
-            yield name, _clip(addr, 64)
+        ipv4 = iface.get("ipv4")
+        addrs = [_clip(a, 64) for a in (ipv4 if isinstance(ipv4, list) else [])]
         if iface.get("ipv6"):
-            yield name, _clip(iface["ipv6"], 64)
+            addrs.append(_clip(iface["ipv6"], 64))
+        for addr in addrs:
+            if found >= _MAX_ADDRESSES:
+                return
+            found += 1
+            yield name, addr
 
 
 async def record_addresses(session, instance: Instance, source_ip: Optional[str],
                            facts: Optional[dict]) -> None:
     """Upsert the seen addresses; those no longer seen stop being current
     (kept as history)."""
+    if facts is not None and len(json.dumps(facts)) > _MAX_FACTS:
+        facts = None   # ignored by apply_facts too
     now = datetime.utcnow()
     seen = set()
     if source_ip:
