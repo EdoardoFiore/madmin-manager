@@ -61,6 +61,9 @@ _DOWNLOAD_TOKEN_RE = re.compile(r'^(/api/modules/[^/]+/download/)[^/]+')
 # login form, masked, is kept: failed logins are worth auditing)
 _ANONYMOUS_BODY_PATHS = ("/api/auth/token",)
 
+# Larger bodies are not read by the middleware (the log keeps their size only)
+_MAX_LOGGED_BODY = 50000
+
 
 def redact_path(path: str) -> str:
     """The request path as stored in the audit log."""
@@ -206,9 +209,17 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         body_text = None
         if method in ("POST", "PUT", "PATCH", "DELETE"):
             content_type = request.headers.get("content-type", "")
-
-            # Skip forms/file uploads to save memory and avoid logging binary data
-            if "multipart/form-data" not in content_type:
+            length = request.headers.get("content-length", "")
+            loggable = ("application/json" in content_type or "application/x-www-form-urlencoded" in content_type)
+            # Read only what the log can keep: a JSON or form body of known,
+            # small size. Anything else (a release upload of up to 1 GB, a
+            # body without length) stays a stream for the route; reading it
+            # here held it all in memory before the route could refuse an
+            # anonymous caller.
+            if not loggable or not length.isdigit() or int(length) > _MAX_LOGGED_BODY:
+                if length.isdigit() and int(length):
+                    body_text = f"<payload {content_type or 'senza content-type'}, {length} byte, non registrato>"
+            else:
                 try:
                     # Read the body
                     body_bytes = await request.body()
@@ -221,8 +232,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     # it listened for the client leaving.
 
                     if body_bytes:
-                        # Truncate if too large (> 50KB) to prevent blowing up DB
-                        if len(body_bytes) > 50000:
+                        # The header may lie (chunked body): checked again
+                        if len(body_bytes) > _MAX_LOGGED_BODY:
                             body_text = "<Payload troppo grande per il log>"
                         else:
                             text = body_bytes.decode("utf-8")
