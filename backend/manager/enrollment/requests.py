@@ -37,6 +37,7 @@ from . import service
 logger = logging.getLogger("madmin_manager.enrollment")
 
 POLL_INTERVAL = 60
+MAX_PENDING_PER_IP = 20
 # The approved identity stays downloadable this long (an instance that
 # crashed before saving it can fetch it again)
 DELIVERY_WINDOW = timedelta(days=1)
@@ -63,6 +64,12 @@ async def create_request(session, csr: str, facts: dict, proto: int, source_ip: 
                                      .where(EnrollmentRequest.status == "pending"))).scalar_one()
     if pending >= settings.registration_max_pending:
         raise HTTPException(503, "Troppe richieste in attesa: riprovare più tardi")
+    # One address cannot fill the whole queue (and lock out every other
+    # registration until the requests expire)
+    from_ip = (await session.execute(select(func.count()).select_from(EnrollmentRequest).where(
+        EnrollmentRequest.status == "pending", EnrollmentRequest.source_ip == source_ip[:45]))).scalar_one()
+    if from_ip >= MAX_PENDING_PER_IP:
+        raise HTTPException(429, "Troppe richieste in attesa da questo indirizzo: riprovare più tardi")
     fp = key_fingerprint(csr)
     # Checked now (proof the sender holds the key), signed at approval
     if not x509.load_pem_x509_csr(csr.encode()).is_signature_valid:

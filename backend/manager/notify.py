@@ -43,6 +43,9 @@ async def send(settings, subject: str, text: str, to: List[str]) -> List[str]:
     from core.email import send_email
     from core.secrets import decrypt_setting
     password = decrypt_setting(settings.smtp_password) if settings.smtp_password else None
+    # Subjects carry names an instance reports (an anonymous registration's
+    # hostname): no line breaks or other control characters in a header
+    subject = "".join(c if c.isprintable() else " " for c in subject)[:200]
     errors = []
     for addr in to:
         res = await send_email(
