@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.4.2] - 2026-11-15
+
+### Fixed
+- Instances: on a wide screen the search block of the tree panel took half of its height, leaving an empty space above "Tutte le istanze"; it keeps its own height and the tree takes the rest.
+
 ## [1.4.1] - 2026-11-15
 
 ### Fixed
