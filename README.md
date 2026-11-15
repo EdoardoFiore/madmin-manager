@@ -21,7 +21,7 @@ Gestione centralizzata delle istanze MADMIN: inventario, backup, accesso di supp
 
 ```bash
 git clone <repo> madmin-manager && cd madmin-manager
-sudo MADMIN_MANAGER_ADMIN_PASSWORD='Password!1' bash scripts/setup-manager.sh --host manager.example.com --ip 10.0.0.5
+sudo MADMIN_MANAGER_ADMIN_PASSWORD='Password!1' bash scripts/setup-manager.sh --host manager.example.com --ip 10.0.0.5 --ui-allow 10.0.0.0/24
 ```
 
 ### Opzioni
@@ -71,7 +71,7 @@ Lo script si può rilanciare sopra un'installazione esistente:
 
 ```bash
 cd madmin-manager && git pull
-sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com --ip 10.0.0.5
+sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com --ip 10.0.0.5 --ui-allow 10.0.0.0/24
 ```
 
 Se trova `/opt/madmin-manager/backend/.env`:

@@ -12,7 +12,7 @@ sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host ma
 ```
 
 - `--host/--ip`: what instances use to reach the manager (in the endpoint certificate and in every token).
-- `--ui-allow`: source addresses allowed on the UI (nginx, `/etc/nginx/snippets/madmin-manager-ui-allow.conf`). Required in production. To change it later: rerun with `--ui-allow`, or edit the file and `nginx -t && systemctl reload nginx`. The agent port stays open to the instances.
+- `--ui-allow`: source addresses allowed on the UI (nginx, `/etc/nginx/snippets/madmin-manager-ui-allow.conf`). Required in production: a first install refuses to start without it, unless `--ui-allow-any` (a test manager open to every address). To change it later: rerun with `--ui-allow`, or edit the file and `nginx -t && systemctl reload nginx`. The agent port stays open to the instances.
 - Rerunning the installer over an existing manager keeps database, `SECRET_KEY` and PKI: it is how the manager is updated (`git pull` then rerun). Schema steps run at startup (`backend/core/migrations/`).
 
 Open towards the manager: UI port (operators, filtered), agent port 8443 (instances), support ports 9100–9119 (operators; each session admits one IP).

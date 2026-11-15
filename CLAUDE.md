@@ -16,7 +16,7 @@ The previous attempt is in `../madmin-hub-legacy` (reference only, do not copy f
 - DB schema: `init_db()` runs `create_all` (new tables), then the numbered steps in `backend/core/migrations/NNNN_<name>.py` (any change to an existing table: column, type, index). A new column needs both the model field and a step (`ADD COLUMN IF NOT EXISTS ...`); steps are forward only and idempotent.
 
 ```bash
-sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com [--ip 10.0.0.5]
+sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host manager.example.com [--ip 10.0.0.5] --ui-allow 10.0.0.0/24
 ```
 
 ## Architecture
