@@ -6,7 +6,7 @@
 import { apiGet, apiPost, apiPatch, apiDelete, getToken } from '../api.js';
 import { escapeHtml, showToast, confirmDialog, loadingSpinner, formatBytes,
          actionAttrs, registerActions } from '../utils.js';
-import { checkPermission, setPageActions, refreshBadges } from '../app.js';
+import { checkPermission, setPageActions, refreshBadges, getUser } from '../app.js';
 import { fmtDate, relTime, onlineBadge, commandStatusBadge, formModal, secretModal, copyBlock, enrollTokenHelp,
          formData, groupOptions, groupPath, labelBadges, labelsToText, textToLabels,
          cmpVersion, meter, STATUS_LABELS, field, formSection, notice, typedConfirm, confirmAction,
@@ -940,7 +940,7 @@ export function sessionTable(rows, showInstance = false) {
             <td class="font-monospace">${escapeHtml(s.allowed_ip)}</td><td>${fmtDate(s.expires_at)}</td>
             <td>${s.status === 'open' ? '<span class="badge bg-warning-lt">aperta</span>' : `<span class="badge bg-secondary-lt">${escapeHtml(SESSION_STATUS[s.status] || s.status)}</span>`}</td>
             <td class="text-end"><div class="btn-list justify-content-end">${s.status === 'open' && checkPermission('manager.manage') ? `
-                ${s.kind === 'ui' ? `<button class="btn btn-sm btn-outline-primary" ${actionAttrs('managerSupportTicket', s.id)}>Nuovo link</button>` : ''}
+                ${s.kind === 'ui' && s.operator === getUser()?.username ? `<button class="btn btn-sm btn-outline-primary" ${actionAttrs('managerSupportTicket', s.id)}>Nuovo link</button>` : ''}
                 <button class="btn btn-sm btn-outline-danger" ${actionAttrs('managerSupportClose', s.id)}>Chiudi</button>` : ''}</div></td>
         </tr>`).join('') || `<tr><td colspan="${showInstance ? 9 : 8}" class="text-muted">Nessuna sessione</td></tr>`}
         </tbody></table></div>`;
@@ -1762,8 +1762,11 @@ registerActions({
             ? { submitText: 'Chiudi la sessione attuale e apri', submitClass: 'btn-warning', size: 'lg', tone: 'warning', icon: 'ti-terminal-2' }
             : { submitText: 'Apri sessione', size: 'lg', tone: 'primary', icon: 'ti-terminal-2' });
     },
-    managerSupportTicket: async (id) => {
-        try { uiLinkModal(await apiPost(`/support/${id}/ticket`, {})); } catch (e) { showToast(e.message, 'error'); }
+    managerSupportTicket: (id) => {
+        // A new link is a new superuser login on the instance: a fresh code, as at the opening
+        formModal('Nuovo link di accesso', `<div class="row g-2">${otpField('dall\'app di autenticazione, nuovo a ogni link (non i codici di recupero)')}</div>`,
+            async (form) => uiLinkModal(await apiPost(`/support/${id}/ticket`, { totp: formData(form).totp })),
+            { submitText: 'Crea link', tone: 'primary', icon: 'ti-link' });
     },
     managerSupportClose: async (id) => {
         try {

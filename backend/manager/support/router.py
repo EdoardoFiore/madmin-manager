@@ -127,12 +127,23 @@ async def _open_session(session, session_id: str) -> SupportSession:
     return row
 
 
+class TicketIn(BaseModel):
+    totp: str = Field(default="", max_length=12)
+
+
 @router.post("/support/{session_id}/ticket")
-async def new_ticket(session_id: str, session: AsyncSession = Depends(get_session),
+async def new_ticket(session_id: str, body: TicketIn, request: Request,
+                     session: AsyncSession = Depends(get_session),
                      user: User = Depends(require_permission("manager.manage"))):
+    """Another login link for one's own open UI session: a ticket is a
+    superuser login on the instance, so it takes a fresh 2FA code like the
+    opening (ROADMAP 10.4), and only the operator who opened it gets one."""
     row = await _open_session(session, session_id)
+    if row.operator != user.username:
+        raise HTTPException(404, "Sessione non trovata")
     if row.kind != "ui":
         raise HTTPException(400, "Solo per sessioni UI")
+    await require_step_up(session, user, body.totp, request)
     return await service.new_ticket(session, row, user.username)
 
 
