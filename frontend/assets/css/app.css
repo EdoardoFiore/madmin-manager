@@ -774,6 +774,10 @@ tr.fw-row-flash > td {
         height: calc(100vh - 8rem);
         margin-bottom: 0;
     }
+    /* Tabler's card-body grows too: the search block keeps its own height */
+    .inst-tree-card > .card-body {
+        flex: 0 0 auto;
+    }
     .inst-tree {
         flex: 1 1 auto;
         max-height: none;
