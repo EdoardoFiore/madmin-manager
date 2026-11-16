@@ -8,6 +8,14 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.8.0] - 2026-11-16
+
+### Added
+- LDAP / Active Directory: the access rules can name a single **user** as well as a group, each with role, access (read and write, or read only) and manager group. A rule for the user wins over the rules for groups. Rules are edited as a table in Settings, with "Cerca nella directory" to pick users and groups (`POST /api/settings/ldap/search`, at most 10 users and 10 groups, with the saved connection). Existing group rules keep working as they are.
+
+### Changed
+- Settings reorganised: a menu of sections (Generale, Certificati, Notifiche e-mail, LDAP / Active Directory; Connessione, Registrazione senza token, Aggiornamenti, Backup e licenze), each saved on its own with only the fields that changed, a mark on the sections with unsaved changes, and real controls (selects, units, time zones, colour) instead of free text. The tests (e-mail, LDAP login) work on the saved settings and are disabled while the section has unsaved changes.
+
 ## [1.7.0] - 2026-11-16
 
 ### Added

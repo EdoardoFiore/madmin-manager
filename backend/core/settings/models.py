@@ -67,8 +67,9 @@ class SystemSettings(SQLModel, table=True):
     ldap_base_dn: str = Field(default="", max_length=500)
     ldap_user_filter: str = Field(default="(|(uid={username})(sAMAccountName={username}))", max_length=500)
     ldap_ca_pem: str = Field(default="", max_length=20000)     # CA of the directory; "" = system CAs
-    # [{"group": "<group DN>", "role": "superuser|partner|customer", "access": "rw|ro",
-    #   "group_id": "<manager group, partner/customer only>"}], first match wins
+    # Access rules: [{"user": "<login name>" | "group": "<group DN>", "role": "superuser|partner|customer",
+    #   "access": "rw|ro", "group_id": "<manager group, partner/customer only>"}].
+    # A rule for the user wins over the group rules, then the first group rule that matches
     ldap_mappings: str = Field(default="[]", max_length=20000)
 
     # Automatic security updates of the instances (unattended-upgrades and the

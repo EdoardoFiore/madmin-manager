@@ -1,110 +1,350 @@
 /**
  * MADMIN Manager - Settings.
+ *
+ * A menu of sections on the left, one section at a time on the right. Each
+ * section is its own form: "Salva" sends only the fields that changed in it,
+ * a dot in the menu marks the sections with unsaved changes.
  */
 import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { escapeHtml, showToast } from '../utils.js';
 import { checkPermission } from '../app.js';
-import { formModal, formData, field, notice, confirmAction, fmtDate, otpField } from './manager-common.js';
+import { formModal, formData, field, notice, confirmAction, fmtDate, otpField, validateForm } from './manager-common.js';
 
-const FIELDS = [
-    ['Generale', [
-        ['company_name', 'Nome', 'text'],
-        ['primary_color', 'Colore principale', 'text'],
-        ['default_language', 'Lingua predefinita (it/en)', 'text'],
-        ['password_max_age_days', 'Scadenza password (giorni, 0 = mai)', 'number'],
-    ]],
-    ['Istanze', [
-        ['agent_url', 'URL agent (https://host:8443), scritto nei token di enrollment', 'text'],
-        ['support_host', 'Host per le porte di supporto (vuoto = host dell\'URL agent)', 'text'],
-        ['support_port_min', 'Prima porta di supporto', 'number'],
-        ['support_port_max', 'Ultima porta di supporto', 'number'],
-    ]],
-    ['Registrazione senza token', [
-        ['registration_enabled', 'Ammessa (le richieste vanno approvate in Enrollment)', 'checkbox'],
-        ['registration_allowed_cidrs', 'Solo da queste reti (separate da virgola, vuoto = tutte)', 'text'],
-        ['registration_ttl_days', 'Scadenza delle richieste (giorni)', 'number'],
-        ['registration_max_pending', 'Massimo richieste in attesa', 'number'],
-    ]],
-    ['Agent delle istanze (applicato alla connessione successiva)', [
-        ['agent_heartbeat_interval', 'Heartbeat ogni (secondi, 30-600)', 'number'],
-        ['agent_facts_interval', 'Controllo dei dati dell\'istanza ogni (secondi, 60-3600)', 'number'],
-        ['agent_backoff_max', 'Attesa massima tra due riconnessioni (secondi, 30-900)', 'number'],
-    ]],
-    ['Release', [
-        ['release_keys', 'Chiavi pubbliche di firma (PEM, una o più): una release caricata deve essere firmata da una di queste. Vuoto = non verificata qui (le istanze la verificano sempre)', 'textarea'],
-    ]],
-    ['Aggiornamenti automatici delle istanze', [
-        ['autoupdate_time', 'Ora (ogni giorno: solo gli aggiornamenti di sicurezza della versione di Ubuntu installata, mai gli aggiornamenti normali né un\'altra versione di Ubuntu; poi riavvio dei servizi che li usano, mai della macchina). Un gruppo può avere la sua', 'time'],
-        ['autoupdate_tz', 'Fuso orario (es. Europe/Rome)', 'text'],
-        ['autoupdate_randomize', 'Ritardo casuale massimo (minuti, 0-180): le istanze non si aggiornano tutte nello stesso istante', 'number'],
-    ]],
-    ['Notifiche e-mail', [
-        ['smtp_host', 'Server SMTP (vuoto = nessuna e-mail, restano i contatori nel menu)', 'text'],
-        ['smtp_port', 'Porta', 'number'],
-        ['smtp_encryption', 'Cifratura (none, tls = STARTTLS, ssl)', 'text'],
-        ['smtp_username', 'Utente', 'text'],
-        ['smtp_password', 'Password (vuoto = invariata)', 'password'],
-        ['smtp_from', 'Mittente', 'text'],
-        ['notify_to', 'Destinatari (separati da virgola; vuoto = i superuser con e-mail)', 'text'],
-    ]],
-    ['Utenti LDAP / Active Directory', [
-        ['ldap_enabled', 'Login con utenti LDAP (gli utenti locali restano validi)', 'checkbox'],
-        ['ldap_url', 'Server (ldaps://host:636, oppure ldap://host con StartTLS)', 'text'],
-        ['ldap_bind_dn', 'Account di servizio (DN) per le ricerche', 'text'],
-        ['ldap_bind_password', 'Password dell\'account di servizio (vuoto = invariata)', 'password'],
-        ['ldap_base_dn', 'Base di ricerca', 'text'],
-        ['ldap_user_filter', 'Filtro utente ({username} = nome inserito al login)', 'text'],
-        ['ldap_ca_pem', 'CA del server LDAP (PEM; vuoto = CA di sistema)', 'textarea'],
-        ['ldap_mappings', 'Gruppi LDAP → ruolo (JSON, vince il primo): [{"group": "cn=...,dc=...", "role": "superuser|partner|customer", "access": "rw|ro", "group_id": "<id gruppo del manager>"}]', 'textarea'],
-    ]],
-    ['Backup e licenze', [
-        ['backup_interval_hours', 'Backup pianificati ogni (ore, 0 = disattivati)', 'number'],
-        ['backup_retention', 'Backup conservati per istanza', 'number'],
-        ['license_validity_days', 'Durata di un token di licenza (giorni)', 'number'],
-    ]],
+const TIMEZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+
+// Field: k (setting), label, type (text, number, password, select, checkbox,
+// color, time, textarea, rules), hint (HTML), col, unit (suffix), min, max,
+// maxlength, options, placeholder, rows, mono, list (datalist id).
+const SECTIONS = [
+    { group: 'Manager', id: 'general', icon: 'ti-adjustments', title: 'Generale',
+      desc: 'Nome e aspetto del manager, regole delle password.', blocks: [
+        { title: 'Aspetto', fields: [
+            { k: 'company_name', label: 'Nome', col: 'col-md-6', maxlength: 100, hint: 'Nel menu, nel titolo della pagina e nelle e-mail.' },
+            { k: 'primary_color', label: 'Colore principale', type: 'color', col: 'col-6 col-md-3' },
+            { k: 'default_language', label: 'Lingua predefinita', type: 'select', col: 'col-6 col-md-3', options: [['it', 'Italiano'], ['en', 'English']] },
+        ] },
+        { title: 'Password degli utenti locali', fields: [
+            { k: 'password_max_age_days', label: 'Scadenza', type: 'number', min: 0, max: 3650, unit: 'giorni', col: 'col-md-4', hint: '0 = non scadono mai.' },
+        ] },
+    ] },
+    { group: 'Manager', id: 'certs', icon: 'ti-certificate', title: 'Certificati',
+      desc: 'Il certificato dell\'interfaccia web e quello della porta a cui si collegano le istanze.', custom: true },
+    { group: 'Manager', id: 'mail', icon: 'ti-mail', title: 'Notifiche e-mail',
+      desc: 'Avvisi per ciò che richiede una persona: richieste di registrazione, chiavi SSH da approvare, aggiornamenti falliti, vulnerabilità critiche, certificati in scadenza.',
+      test: { id: 'smtp-test', label: 'Invia e-mail di prova', icon: 'ti-send' }, blocks: [
+        { title: 'Server di posta', note: 'Senza server non parte nessuna e-mail: restano i contatori nel menu.', fields: [
+            { k: 'smtp_host', label: 'Server SMTP', col: 'col-md-6', placeholder: 'smtp.example.com' },
+            { k: 'smtp_port', label: 'Porta', type: 'number', min: 1, max: 65535, col: 'col-6 col-md-3' },
+            { k: 'smtp_encryption', label: 'Cifratura', type: 'select', col: 'col-6 col-md-3', options: [['tls', 'STARTTLS'], ['ssl', 'SSL/TLS'], ['none', 'Nessuna']] },
+            { k: 'smtp_username', label: 'Utente', col: 'col-md-6', hint: 'Vuoto = senza autenticazione.' },
+            { k: 'smtp_password', label: 'Password', type: 'password', col: 'col-md-6', hint: 'Vuoto = resta quella salvata.' },
+        ] },
+        { title: 'Messaggi', fields: [
+            { k: 'smtp_from', label: 'Mittente', col: 'col-md-6', placeholder: 'manager@example.com' },
+            { k: 'notify_to', label: 'Destinatari', col: 'col-md-6', placeholder: 'noc@example.com, ops@example.com', hint: 'Separati da virgola. Vuoto = i superuser che hanno un\'e-mail.' },
+        ] },
+    ] },
+    { group: 'Manager', id: 'ldap', icon: 'ti-address-book', title: 'LDAP / Active Directory',
+      desc: 'Login con gli utenti della directory. Gli utenti locali restano validi e un nome utente locale non viene mai cercato nella directory.',
+      test: { id: 'ldap-test', label: 'Prova un login', icon: 'ti-plug-connected' }, blocks: [
+        { fields: [
+            { k: 'ldap_enabled', label: 'Login con gli utenti della directory', type: 'checkbox', hint: 'Entra solo chi corrisponde a una regola di accesso qui sotto. La 2FA del manager è obbligatoria anche per loro.' },
+        ] },
+        { title: 'Connessione', fields: [
+            { k: 'ldap_url', label: 'Server', col: 'col-md-6', mono: true, placeholder: 'ldaps://dc.example.com:636', hint: '<code>ldaps://host:636</code> oppure <code>ldap://host</code> (StartTLS). Nome DNS, non IP: deve corrispondere al certificato.' },
+            { k: 'ldap_base_dn', label: 'Base di ricerca', col: 'col-md-6', mono: true, placeholder: 'dc=example,dc=com' },
+            { k: 'ldap_bind_dn', label: 'Account di servizio', col: 'col-md-6', mono: true, placeholder: 'cn=manager,ou=service,dc=example,dc=com', hint: 'Usato solo per cercare utenti e gruppi.' },
+            { k: 'ldap_bind_password', label: 'Password dell\'account di servizio', type: 'password', col: 'col-md-6', hint: 'Vuoto = resta quella salvata.' },
+            { k: 'ldap_user_filter', label: 'Filtro utente', col: 'col-12', mono: true, hint: '<code>{username}</code> = il nome inserito al login.' },
+            { k: 'ldap_ca_pem', label: 'CA del server', type: 'textarea', rows: 4, col: 'col-12', placeholder: '-----BEGIN CERTIFICATE-----', hint: 'PEM. Vuoto = le CA di sistema (certificato pubblico).' },
+        ] },
+        { title: 'Chi può entrare', note: 'Una regola per ogni utente o gruppo della directory ammesso, con il tipo di accesso. Chi non corrisponde a nessuna regola non entra.', fields: [
+            { k: 'ldap_mappings', type: 'rules' },
+        ] },
+    ] },
+    { group: 'Istanze', id: 'connection', icon: 'ti-plug', title: 'Connessione',
+      desc: 'Come le istanze raggiungono il manager e come gli operatori raggiungono le sessioni di supporto.', blocks: [
+        { title: 'Indirizzi', fields: [
+            { k: 'agent_url', label: 'URL per le istanze', col: 'col-md-6', mono: true, placeholder: 'https://manager.example.com:8443', hint: 'Scritto in ogni token di enrollment. Le istanze già registrate non lo cambiano da qui (istanza → Cambia indirizzo).' },
+            { k: 'support_host', label: 'Host delle porte di supporto', col: 'col-md-6', mono: true, hint: 'Quello che usano gli operatori. Vuoto = l\'host dell\'URL per le istanze.' },
+            { k: 'support_port_min', label: 'Prima porta di supporto', type: 'number', min: 1024, max: 65535, col: 'col-6 col-md-3' },
+            { k: 'support_port_max', label: 'Ultima porta di supporto', type: 'number', min: 1024, max: 65535, col: 'col-6 col-md-3', hint: 'Una porta per sessione aperta, al massimo 200.' },
+        ] },
+        { title: 'Agent delle istanze', note: 'Applicato a ogni istanza alla connessione successiva.', fields: [
+            { k: 'agent_heartbeat_interval', label: 'Heartbeat ogni', type: 'number', min: 30, max: 600, unit: 'secondi', col: 'col-md-4', hint: '30-600.' },
+            { k: 'agent_facts_interval', label: 'Controllo dei dati ogni', type: 'number', min: 60, max: 3600, unit: 'secondi', col: 'col-md-4', hint: '60-3600. Versioni, risorse, pacchetti.' },
+            { k: 'agent_backoff_max', label: 'Attesa massima tra riconnessioni', type: 'number', min: 30, max: 900, unit: 'secondi', col: 'col-md-4', hint: '30-900.' },
+        ] },
+    ] },
+    { group: 'Istanze', id: 'registration', icon: 'ti-user-plus', title: 'Registrazione senza token',
+      desc: 'Un\'istanza installata con il solo indirizzo del manager manda una richiesta, da approvare in Enrollment → In attesa.', blocks: [
+        { fields: [
+            { k: 'registration_enabled', label: 'Accetta richieste di registrazione', type: 'checkbox', hint: 'Disattivata: si registra solo chi ha un token.' },
+            { k: 'registration_allowed_cidrs', label: 'Solo da queste reti', col: 'col-12', mono: true, placeholder: '10.0.0.0/8, 192.0.2.0/24', hint: 'Indirizzi o reti separati da virgola. Vuoto = da qualsiasi indirizzo.' },
+            { k: 'registration_ttl_days', label: 'Scadenza delle richieste', type: 'number', min: 1, max: 90, unit: 'giorni', col: 'col-md-4', hint: 'Non approvate entro questo tempo vengono eliminate.' },
+            { k: 'registration_max_pending', label: 'Richieste in attesa', type: 'number', min: 1, max: 10000, unit: 'al massimo', col: 'col-md-4' },
+        ] },
+    ] },
+    { group: 'Istanze', id: 'updates', icon: 'ti-refresh', title: 'Aggiornamenti',
+      desc: 'Aggiornamenti di sicurezza automatici del sistema operativo e firma delle release di MADMIN.', blocks: [
+        { title: 'Aggiornamenti automatici di sicurezza', note: 'Ogni giorno, solo gli aggiornamenti di sicurezza della versione di Ubuntu installata: mai quelli normali, mai un\'altra versione di Ubuntu. Poi riavvio dei servizi che li usano, mai della macchina. Un gruppo può avere un\'ora diversa.', fields: [
+            { k: 'autoupdate_time', label: 'Ora', type: 'time', col: 'col-6 col-md-3' },
+            { k: 'autoupdate_tz', label: 'Fuso orario', col: 'col-6 col-md-5', list: 'settings-timezones', placeholder: 'Europe/Rome' },
+            { k: 'autoupdate_randomize', label: 'Ritardo casuale', type: 'number', min: 0, max: 180, unit: 'minuti', col: 'col-md-4', hint: '0-180. Le istanze non si aggiornano tutte nello stesso istante.' },
+        ] },
+        { title: 'Firma delle release', fields: [
+            { k: 'release_keys', label: 'Chiavi pubbliche di firma', type: 'textarea', rows: 6, col: 'col-12', placeholder: '-----BEGIN PUBLIC KEY-----', hint: 'PEM, una o più. Una release caricata deve essere firmata da una di queste. Vuoto = non verificata dal manager (le istanze la verificano sempre).' },
+        ] },
+    ] },
+    { group: 'Istanze', id: 'backups', icon: 'ti-database', title: 'Backup e licenze',
+      desc: 'Backup pianificati delle istanze sul manager e durata dei token di licenza dei moduli.', blocks: [
+        { title: 'Backup', fields: [
+            { k: 'backup_interval_hours', label: 'Backup pianificato ogni', type: 'number', min: 0, max: 3650, unit: 'ore', col: 'col-md-4', hint: '0 = nessun backup pianificato.' },
+            { k: 'backup_retention', label: 'Backup conservati', type: 'number', min: 1, max: 365, unit: 'per istanza', col: 'col-md-4', hint: 'I più vecchi vengono eliminati.' },
+        ] },
+        { title: 'Licenze', fields: [
+            { k: 'license_validity_days', label: 'Durata di un token di licenza', type: 'number', min: 3, max: 365, unit: 'giorni', col: 'col-md-4', hint: '3-365. Rinnovato da solo finché la licenza è attiva: è il tempo per cui un\'istanza scollegata resta licenziata.' },
+        ] },
+    ] },
 ];
 
-// The certificate of the UI port only: the instances' port (8443) always uses
-// the one issued by the manager CA.
-function uiCertCard(c, ro) {
-    if (!c) return '';
-    const days = c.days_left;
-    const tone = days == null ? 'secondary' : days < 15 ? 'danger' : days < 30 ? 'warning' : 'success';
-    const details = c.not_after ? `
-        <div class="mb-2"><div class="small text-muted">Valido per</div>
-            <div class="font-monospace small text-break">${(c.names || []).map(escapeHtml).join(', ') || '-'}</div></div>
-        <div class="mb-2"><div class="small text-muted">Emesso da</div><div class="small text-break">${escapeHtml(c.issuer || '-')}</div></div>
-        <div class="mb-3"><div class="small text-muted">Scadenza</div>
-            <div class="small">${fmtDate(c.not_after)} <span class="badge bg-${tone}-lt ms-1">${days < 0 ? 'scaduto' : `${days} giorni`}</span></div></div>` : '';
-    return `<div class="col-lg-6 col-xl-3"><div class="card"><div class="card-header"><h3 class="card-title">Certificato della UI</h3></div>
-        <div class="card-body">
-            <div class="mb-3">${c.custom
-                ? '<span class="badge bg-success-lt">Proprio</span>'
-                : '<span class="badge bg-secondary-lt">Interno (CA del manager)</span>'}
-                <div class="form-hint">${c.custom
-                    ? 'Non si rinnova da solo: caricare il nuovo prima della scadenza.'
-                    : 'I browser non conoscono la CA del manager e mostrano un avviso: caricare un certificato proprio per toglierlo.'}
-                    Riguarda solo la UI, non la porta delle istanze.</div></div>
-            ${details}
-            ${c.endpoint ? `<div class="mb-3 pt-2 border-top small">
-                <div class="text-muted mb-1">Porta delle istanze</div>
-                <div>Certificato: ${fmtDate(c.endpoint.not_after)} <span class="text-muted">(rinnovo automatico)</span></div>
-                <div>CA del manager: ${fmtDate(c.ca.not_after)}
-                    ${c.ca.days_left < 365 ? `<span class="badge bg-${c.ca.days_left < 90 ? 'danger' : 'warning'}-lt ms-1" title="Non si rinnova da sola: python -m manager.pki rotate-ca">${c.ca.days_left} giorni: da ruotare</span>` : ''}</div>
-            </div>` : ''}
-            ${c.installed ? '' : notice('warning', '', ['Non gestito da questa installazione: rieseguire <code>setup-manager.sh</code> di questa versione.'])}
-            ${ro || !c.installed ? '' : `<div class="btn-list">
-                <button type="button" class="btn btn-outline-primary btn-sm" id="ui-cert-upload"><i class="ti ti-upload me-1"></i>Carica certificato</button>
-                ${c.custom ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="ui-cert-reset">Torna a quello interno</button>' : ''}
-            </div>`}
-        </div></div></div>`;
+const fieldsOf = (sec) => (sec.blocks || []).flatMap((b) => b.fields);
+const DOTS = '••••••••';
+const hexColor = (v) => /^#[0-9a-f]{3}$/i.test(v || '') ? '#' + [...v.slice(1)].map((c) => c + c).join('') : (v || '#206bc4');
+
+// ---------------------------------------------------------------- fields
+
+function control(f, ro) {
+    if (f.type === 'rules') return '<input type="hidden" name="ldap_mappings"><div class="col-12" id="ldap-rules"></div>';
+    const dis = ro ? 'disabled' : '';
+    const id = `set-${f.k}`;
+    const hint = f.hint ? `<div class="form-hint">${f.hint}</div>` : '';
+    const fb = '<div class="invalid-feedback"></div>';
+    if (f.type === 'checkbox') {
+        return `<div class="${f.col || 'col-12'}"><label class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" name="${f.k}" id="${id}" ${dis}>
+            <span class="form-check-label fw-medium">${f.label}</span></label>${hint}</div>`;
+    }
+    const cls = `form-control${f.mono ? ' font-monospace' : ''}`;
+    const ph = f.placeholder ? `placeholder="${escapeHtml(f.placeholder)}"` : '';
+    let input;
+    if (f.type === 'textarea') {
+        input = `<textarea class="form-control font-monospace small" name="${f.k}" id="${id}" rows="${f.rows || 4}" spellcheck="false" ${ph} ${dis}></textarea>${fb}`;
+    } else if (f.type === 'select') {
+        input = `<select class="form-select" name="${f.k}" id="${id}" ${dis}>${f.options.map(([v, l]) =>
+            `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join('')}</select>${fb}`;
+    } else if (f.type === 'color') {
+        input = `<input type="color" class="form-control form-control-color w-100" name="${f.k}" id="${id}" ${dis}>${fb}`;
+    } else {
+        const a = [
+            f.type === 'number' || f.type === 'time' ? 'required' : '',
+            f.min != null ? `min="${f.min}"` : '', f.max != null ? `max="${f.max}"` : '',
+            f.maxlength ? `maxlength="${f.maxlength}"` : '', f.list ? `list="${f.list}"` : '',
+            f.type === 'password' ? 'autocomplete="new-password"' : 'autocomplete="off"', ph, dis,
+        ].filter(Boolean).join(' ');
+        input = `<input type="${f.type || 'text'}" class="${cls}" name="${f.k}" id="${id}" ${a}>`;
+        input = f.unit
+            ? `<div class="input-group has-validation">${input}<span class="input-group-text">${f.unit}</span>${fb}</div>`
+            : input + fb;
+    }
+    return `<div class="${f.col || 'col-12'}"><label class="form-label" for="${id}">${f.label}</label>${input}${hint}</div>`;
 }
 
-function uiCertUpload(container) {
+function read(form, f) {
+    const el = form.elements[f.k];
+    if (f.type === 'checkbox') return el.checked;
+    const v = el.value.trim();
+    return f.type === 'number' ? (v === '' ? null : Number(v)) : v;
+}
+
+// ---------------------------------------------------------------- LDAP access rules
+
+// ldap_mappings: [{user | group, role, access, group_id}]. A rule for a user
+// always wins over the rules for groups; among groups, the first that matches.
+const ROLES = [['superuser', 'Superuser'], ['partner', 'Partner'], ['customer', 'Cliente']];
+const ACCESS = [['rw', 'Lettura e scrittura'], ['ro', 'Sola lettura']];
+
+function parseRules(raw) {
+    let items = [];
+    try { items = JSON.parse(raw || '[]'); } catch { /* shown empty: saving rewrites it */ }
+    return (Array.isArray(items) ? items : []).map((m) => ({
+        type: m.user ? 'user' : 'group', name: m.user || m.group || '',
+        role: m.role || 'customer', access: m.access || 'ro', group_id: m.group_id || '',
+    }));
+}
+
+const serializeRules = (rules) => JSON.stringify(rules.map((r) => ({
+    [r.type]: r.name.trim(), role: r.role, access: r.access,
+    ...(r.role === 'superuser' ? {} : { group_id: r.group_id }),
+})));
+
+function rulesEditor(form, groups, ro) {
+    const box = form.querySelector('#ldap-rules');
+    const hidden = form.elements.ldap_mappings;
+    let rules = [];
+    const opts = (list, sel) => list.map(([v, l]) => `<option value="${escapeHtml(v)}" ${v === sel ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('');
+    const dis = ro ? 'disabled' : '';
+
+    function draw() {
+        hidden.value = serializeRules(rules);
+        box.innerHTML = `
+            ${rules.length ? `<div class="table-responsive border rounded mb-2"><table class="table table-vcenter mb-0">
+                <thead><tr><th>Utente o gruppo della directory</th><th>Ruolo</th><th>Accesso</th><th>Vede</th><th class="w-1"></th></tr></thead>
+                <tbody>${rules.map((r, i) => {
+                    const kind = r.role === 'partner' ? 'partner' : 'customer';
+                    const own = groups.filter((g) => g.kind === kind);
+                    return `<tr data-rule="${i}">
+                        <td style="min-width: 22rem"><div class="input-group has-validation">
+                            <select class="form-select flex-grow-0 w-auto" data-f="type" ${dis}>${opts([['user', 'Utente'], ['group', 'Gruppo']], r.type)}</select>
+                            <input class="form-control font-monospace" data-f="name" required maxlength="500" value="${escapeHtml(r.name)}" ${dis}
+                                placeholder="${r.type === 'user' ? 'mario.rossi' : 'cn=noc,ou=groups,dc=example,dc=com'}">
+                            <div class="invalid-feedback"></div></div></td>
+                        <td><select class="form-select" data-f="role" ${dis}>${opts(ROLES, r.role)}</select></td>
+                        <td><select class="form-select" data-f="access" ${dis}>${opts(ACCESS, r.access)}</select></td>
+                        <td style="min-width: 12rem">${r.role === 'superuser'
+                            ? '<span class="text-muted">Tutte le istanze</span>'
+                            : `<select class="form-select" data-f="group_id" required ${dis}>
+                                <option value="">${own.length ? 'Scegli il gruppo…' : `Nessun gruppo ${kind === 'partner' ? 'partner' : 'cliente'}`}</option>
+                                ${opts(own.map((g) => [g.id, g.path || g.name]), r.group_id)}</select><div class="invalid-feedback"></div>`}</td>
+                        <td>${ro ? '' : `<div class="btn-list flex-nowrap">
+                            <button type="button" class="btn btn-icon btn-ghost-secondary btn-sm" data-act="up" title="Sposta su" ${i ? '' : 'disabled'}><i class="ti ti-arrow-up"></i></button>
+                            <button type="button" class="btn btn-icon btn-ghost-danger btn-sm" data-act="del" title="Togli la regola"><i class="ti ti-trash"></i></button>
+                        </div>`}</td></tr>`;
+                }).join('')}</tbody></table></div>`
+            : '<div class="text-muted border rounded p-3 mb-2">Nessuna regola: nessun utente della directory può entrare.</div>'}
+            ${ro ? '' : `<div class="btn-list">
+                <button type="button" class="btn btn-outline-primary btn-sm" data-act="search"><i class="ti ti-search me-1"></i>Cerca nella directory</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-act="add"><i class="ti ti-plus me-1"></i>Aggiungi a mano</button>
+            </div>`}
+            <div class="form-hint mt-2">Una regola per <b>utente</b> vince sempre su quelle per <b>gruppo</b>; tra i gruppi vale la prima che corrisponde.
+                Si applica al login successivo ed entro 15 minuti a chi è già entrato: chi non corrisponde più viene disattivato.</div>`;
+    }
+
+    function changed() {
+        hidden.value = serializeRules(rules);
+        form.dispatchEvent(new Event('input'));
+    }
+
+    box.addEventListener('input', (e) => {
+        const row = e.target.closest('[data-rule]');
+        const key = e.target.dataset.f;
+        if (!row || !key) return;
+        const r = rules[Number(row.dataset.rule)];
+        r[key] = e.target.value;
+        if (key === 'role') r.group_id = '';
+        hidden.value = serializeRules(rules);
+        // Type and role change what the row shows
+        if (key === 'type' || key === 'role') draw();
+    });
+    box.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const i = Number(btn.closest('[data-rule]')?.dataset.rule);
+        const act = btn.dataset.act;
+        if (act === 'add') rules.push({ type: 'user', name: '', role: 'customer', access: 'ro', group_id: '' });
+        else if (act === 'del') rules.splice(i, 1);
+        else if (act === 'up') rules.splice(i - 1, 2, rules[i], rules[i - 1]);
+        else if (act === 'search') return directorySearch((found) => {
+            if (rules.some((r) => r.type === found.kind && r.name.toLowerCase() === found.value.toLowerCase())) return false;
+            rules.push({ type: found.kind, name: found.value, role: 'customer', access: 'ro', group_id: '' });
+            draw(); changed();
+            return true;
+        });
+        draw(); changed();
+    });
+
+    return { set(raw) { rules = parseRules(raw); draw(); } };
+}
+
+/** Users and groups of the directory, found with the saved connection. */
+function directorySearch(onPick) {
+    const el = formModal('Cerca nella directory', `
+        ${notice('info', '', [['ti-info-circle', 'Cerca con la connessione <b>salvata</b>. Chi aggiungi parte come Cliente in sola lettura: ruolo, accesso e gruppo si scelgono nella regola.']])}
+        ${field('query', 'Nome, utente o e-mail', { required: true, minlength: 2, maxlength: 100, attrs: 'autocomplete="off"', example: 'rossi' })}
+        <div id="ldap-found"></div>`,
+    async (form) => {
+        const box = el.querySelector('#ldap-found');
+        const found = await apiPost('/settings/ldap/search', { query: formData(form).query });
+        box.innerHTML = found.length ? `<div class="list-group">${found.map((r, i) => `
+            <div class="list-group-item d-flex align-items-center gap-2">
+                <i class="ti ${r.kind === 'user' ? 'ti-user' : 'ti-users-group'} text-muted"></i>
+                <div class="flex-fill text-truncate">
+                    <div class="text-truncate">${escapeHtml(r.label)} <span class="badge bg-secondary-lt ms-1">${r.kind === 'user' ? 'Utente' : 'Gruppo'}</span></div>
+                    <div class="small text-muted font-monospace text-truncate">${escapeHtml(r.kind === 'user' ? r.value : r.dn)}${r.mail ? ` · ${escapeHtml(r.mail)}` : ''}</div>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-primary" data-pick="${i}">Aggiungi</button>
+            </div>`).join('')}</div>
+            <div class="form-hint">Al massimo 10 utenti e 10 gruppi: restringere la ricerca se manca qualcuno.</div>`
+            : '<div class="text-muted">Nessun utente o gruppo trovato.</div>';
+        box.querySelectorAll('[data-pick]').forEach((btn) => btn.addEventListener('click', () => {
+            const added = onPick(found[Number(btn.dataset.pick)]);
+            btn.disabled = true;
+            btn.textContent = added ? 'Aggiunto' : 'Già presente';
+        }));
+        return false;
+    }, { submitText: 'Cerca', icon: 'ti-search', size: 'lg' });
+}
+
+function ldapTest() {
+    const el = formModal('Prova login LDAP', `
+        ${notice('info', '', [['ti-info-circle', 'Usa le impostazioni <b>salvate</b>; non crea l\'utente, mostra cosa otterrebbe al login.']])}
+        ${field('username', 'Utente', { required: true, maxlength: 100, attrs: 'autocomplete="off"', example: 'mario.rossi' })}
+        ${field('password', 'Password', { type: 'password', required: true, attrs: 'autocomplete="new-password"' })}
+        <div id="ldap-result"></div>`,
+    async (form) => {
+        const box = el.querySelector('#ldap-result');
+        const r = await apiPost('/settings/ldap/test', formData(form));
+        const m = r.mapping;
+        box.innerHTML = notice(m ? 'success' : 'warning', m ? 'Login consentito' : 'Login rifiutato: nessuna regola per questo utente o per i suoi gruppi', [
+            ['ti-id', `<span class="font-monospace small">${escapeHtml(r.dn)}</span>`],
+            m ? ['ti-list-check', `Regola per ${m.user ? 'l\'utente' : 'il gruppo'} <span class="font-monospace small">${escapeHtml(m.user || m.group)}</span>`] : null,
+            m ? ['ti-user-shield', `Ruolo <b>${escapeHtml(m.role)}</b>, accesso <b>${escapeHtml(m.access)}</b>${m.group_id ? `, gruppo <span class="font-monospace">${escapeHtml(m.group_id)}</span>` : ''}`] : null,
+            ['ti-users-group', `Gruppi: ${r.groups.map(g => `<span class="font-monospace small">${escapeHtml(g)}</span>`).join(', ') || 'nessuno'}`]]);
+        return false;
+    }, { submitText: 'Prova', icon: 'ti-plug-connected' });
+}
+
+// ---------------------------------------------------------------- certificates
+
+// Two certificates: the UI port's (own or internal) and the instances' port's,
+// always issued by the manager CA.
+function certPanel(sec, c, ro) {
+    const head = `<h2 class="mb-1">${sec.title}</h2><p class="text-muted mb-4">${sec.desc}</p>`;
+    if (!c) return `<div class="card-body">${head}${notice('warning', '', ['Stato dei certificati non disponibile.'])}</div>`;
+    const item = (title, html) => `<div class="datagrid-item"><div class="datagrid-title">${title}</div><div class="datagrid-content">${html}</div></div>`;
+    const left = (days) => `<span class="badge bg-${days < 15 ? 'danger' : days < 30 ? 'warning' : 'success'}-lt ms-1">${days < 0 ? 'scaduto' : `${days} giorni`}</span>`;
+    return `<div class="card-body">${head}
+        <h3 class="card-title mb-1">Interfaccia web
+            ${c.custom ? '<span class="badge bg-success-lt ms-2">Certificato proprio</span>' : '<span class="badge bg-secondary-lt ms-2">Certificato interno</span>'}</h3>
+        <p class="text-muted small mb-3">${c.custom
+            ? 'Non si rinnova da solo: caricare il nuovo prima della scadenza (arriva un\'e-mail a 30, 14, 7, 3 e 1 giorno).'
+            : 'Emesso dalla CA del manager, che i browser non conoscono: per questo mostrano un avviso. Caricare un certificato proprio per toglierlo.'}</p>
+        ${c.not_after ? `<div class="datagrid mb-3">
+            ${item('Valido per', `<span class="font-monospace small text-break">${(c.names || []).map(escapeHtml).join(', ') || '-'}</span>`)}
+            ${item('Emesso da', `<span class="text-break">${escapeHtml(c.issuer || '-')}</span>`)}
+            ${item('Scadenza', `${fmtDate(c.not_after)}${left(c.days_left)}`)}
+        </div>` : ''}
+        ${c.installed ? '' : notice('warning', '', ['Non gestito da questa installazione: rieseguire <code>setup-manager.sh</code> di questa versione.'])}
+        ${ro || !c.installed ? '' : `<div class="btn-list">
+            <button type="button" class="btn btn-primary" id="ui-cert-upload"><i class="ti ti-upload me-1"></i>Carica certificato</button>
+            ${c.custom ? '<button type="button" class="btn btn-outline-secondary" id="ui-cert-reset">Torna a quello interno</button>' : ''}
+        </div>`}
+        ${c.endpoint ? `<h3 class="card-title mt-5 mb-1">Porta delle istanze</h3>
+        <p class="text-muted small mb-3">Sempre il certificato emesso dalla CA del manager: le istanze si fidano solo di quella. Qui non si carica nulla.</p>
+        <div class="datagrid">
+            ${item('Certificato', `${fmtDate(c.endpoint.not_after)} <span class="text-muted">· rinnovo automatico</span>`)}
+            ${item('CA del manager', `${fmtDate(c.ca.not_after)}${c.ca.days_left < 365
+                ? `<span class="badge bg-${c.ca.days_left < 90 ? 'danger' : 'warning'}-lt ms-1">${c.ca.days_left} giorni: da ruotare</span>
+                   <div class="small text-muted">Non si rinnova da sola: <code>python -m manager.pki rotate-ca</code></div>` : ''}`)}
+        </div>` : ''}
+    </div>`;
+}
+
+function uiCertUpload(refresh) {
     const host = location.hostname;
-    formModal('Certificato della UI', `
+    formModal('Certificato dell\'interfaccia web', `
         ${notice('info', '', [
-            ['ti-world', 'Vale solo per la UI. La porta delle istanze resta sul certificato della CA del manager.'],
+            ['ti-world', 'Vale solo per l\'interfaccia web. La porta delle istanze resta sul certificato della CA del manager.'],
             ['ti-refresh', 'nginx viene ricaricato: se non presenta il nuovo certificato, torna il precedente.'],
         ])}
         ${field('cert', 'Certificato', { type: 'file', required: true, attrs: 'accept=".crt,.pem,.cer"', hint: 'PEM (.crt, .pem). Può contenere anche la catena.' })}
@@ -118,89 +358,156 @@ function uiCertUpload(container) {
             cert_pem: await text('cert'), key_pem: await text('key'), chain_pem: await text('chain'),
             host, force: form.elements.force.checked, totp: form.elements.totp.value.trim(),
         });
-        showToast('Certificato della UI installato', 'success', 6000);
-        render(container);
+        showToast('Certificato installato', 'success', 6000);
+        refresh();
     }, { submitText: 'Installa', icon: 'ti-certificate' });
 }
 
-async function uiCertReset(container) {
+async function uiCertReset(refresh) {
     const ok = await confirmAction({
         title: 'Tornare al certificato interno?', tone: 'warning', confirmText: 'Ripristina', icon: 'ti-certificate',
         items: ['Il certificato caricato e la sua chiave vengono eliminati dal manager.',
-                'La UI torna al certificato emesso dalla CA del manager: i browser mostreranno di nuovo l\'avviso.'],
+                'L\'interfaccia web torna al certificato emesso dalla CA del manager: i browser mostreranno di nuovo l\'avviso.'],
     });
     if (!ok) return;
     try {
         await apiDelete('/settings/ui-certificate');
         showToast('Certificato interno ripristinato', 'success');
-        render(container);
+        refresh();
     } catch (err) { showToast(err.message, 'error', 8000); }
 }
 
+// ---------------------------------------------------------------- page
+
 export async function render(container) {
-    const s = await apiGet('/settings/system');
     const ro = !checkPermission('manager.manage');
-    const uiCert = await apiGet('/settings/ui-certificate').catch(() => null);
+    let state = await apiGet('/settings/system');
+    const groups = await apiGet('/groups').catch(() => []);
+    let stored = null;
+    try { stored = sessionStorage.getItem('manager-settings-section'); } catch { /* private window */ }
+    let active = SECTIONS.some((x) => x.id === stored) ? stored : SECTIONS[0].id;
+
+    const navGroups = [...new Set(SECTIONS.map((x) => x.group))];
     container.innerHTML = `
-        <form id="manager-settings" class="row row-cards">
-            ${FIELDS.map(([title, fields]) => `
-                <div class="col-lg-6 col-xl-3"><div class="card"><div class="card-header"><h3 class="card-title">${title}</h3></div>
-                <div class="card-body">${fields.map(([k, label, type]) => type === 'textarea' ? `
-                    <div class="mb-3"><label class="form-label">${label}</label>
-                    <textarea name="${k}" class="form-control font-monospace small" rows="6" ${ro ? 'disabled' : ''}>${escapeHtml(s[k] ?? '')}</textarea></div>` : type === 'checkbox' ? `
-                    <label class="form-check mb-3"><input name="${k}" type="checkbox" class="form-check-input" ${s[k] ? 'checked' : ''} ${ro ? 'disabled' : ''}>
-                    <span class="form-check-label">${label}</span></label>` : `
-                    <div class="mb-3"><label class="form-label">${label}</label>
-                    <input name="${k}" type="${type}" class="form-control" value="${type === 'password' ? '' : escapeHtml(s[k] ?? '')}"
-                        ${type === 'password' ? `autocomplete="new-password" placeholder="${s[`${k}_set`] ? '••••••••' : ''}"` : ''} ${ro ? 'disabled' : ''}></div>`).join('')}
-                ${title === 'Notifiche e-mail' && !ro ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="smtp-test">Invia e-mail di prova</button>' : ''}
-                ${title.startsWith('Utenti LDAP') && !ro ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="ldap-test">Prova un login</button>' : ''}
-                </div></div></div>`).join('')}
-            ${uiCertCard(uiCert, ro)}
-            ${ro ? '' : '<div class="col-12"><button class="btn btn-primary">Salva</button></div>'}
-        </form>`;
-    container.querySelector('#ui-cert-upload')?.addEventListener('click', () => uiCertUpload(container));
-    container.querySelector('#ui-cert-reset')?.addEventListener('click', () => uiCertReset(container));
-    container.querySelector('#smtp-test')?.addEventListener('click', async () => {
+        <datalist id="settings-timezones">${TIMEZONES.map((z) => `<option value="${z}">`).join('')}</datalist>
+        <div class="card"><div class="row g-0">
+            <div class="col-12 col-md-4 col-lg-3 border-end"><div class="card-body">
+                ${navGroups.map((g, i) => `<h4 class="subheader ${i ? 'mt-4' : ''}">${g}</h4>
+                    <div class="list-group list-group-transparent">${SECTIONS.filter((x) => x.group === g).map((x) => `
+                        <button type="button" class="list-group-item list-group-item-action d-flex align-items-center text-start" data-nav="${x.id}">
+                            <i class="ti ${x.icon} me-2"></i>${x.title}
+                            <span class="badge bg-orange ms-auto d-none" data-dirty title="Modifiche non salvate"></span>
+                        </button>`).join('')}</div>`).join('')}
+            </div></div>
+            <div class="col-12 col-md-8 col-lg-9">
+                ${SECTIONS.map((x) => x.custom ? `<div data-panel="${x.id}" class="d-none"></div>` : `
+                <form data-panel="${x.id}" class="d-none" novalidate>
+                    <div class="card-body">
+                        <h2 class="mb-1">${x.title}</h2><p class="text-muted mb-4">${x.desc}</p>
+                        ${x.blocks.map((b) => `
+                            ${b.title ? `<h3 class="card-title mt-4 mb-1">${b.title}</h3>` : ''}
+                            ${b.note ? `<p class="text-muted small mb-0">${b.note}</p>` : ''}
+                            <div class="row g-3 mt-0 mb-2">${b.fields.map((f) => control(f, ro)).join('')}</div>`).join('')}
+                    </div>
+                    ${ro ? '' : `<div class="card-footer bg-transparent d-flex align-items-center flex-wrap gap-2">
+                        ${x.test ? `<button type="button" class="btn btn-outline-secondary" id="${x.test.id}"><i class="ti ${x.test.icon} me-1"></i>${x.test.label}</button>
+                            <span class="small text-muted" data-test-note>Usa le impostazioni salvate.</span>` : ''}
+                        <span class="small text-warning ms-auto d-none" data-unsaved><i class="ti ti-point-filled"></i>Modifiche non salvate</span>
+                        <button type="button" class="btn btn-link" data-reset disabled>Annulla</button>
+                        <button type="submit" class="btn btn-primary" disabled>Salva</button>
+                    </div>`}
+                </form>`).join('')}
+            </div>
+        </div></div>`;
+
+    const panel = (id) => container.querySelector(`[data-panel="${id}"]`);
+    const forms = SECTIONS.filter((x) => !x.custom).map((x) => ({ sec: x, form: panel(x.id), initial: {} }));
+    const rules = rulesEditor(panel('ldap'), groups, ro);
+
+    // --- values: from the server state into the inputs, and what changed since
+    function write(entry, keys = null) {
+        for (const f of fieldsOf(entry.sec)) {
+            if (keys && !keys.includes(f.k)) continue;
+            const el = entry.form.elements[f.k];
+            if (f.type === 'rules') rules.set(state[f.k]);
+            else if (f.type === 'checkbox') el.checked = !!state[f.k];
+            else if (f.type === 'password') { el.value = ''; el.placeholder = state[`${f.k}_set`] ? DOTS : ''; }
+            else if (f.type === 'color') el.value = hexColor(state[f.k]);
+            else el.value = state[f.k] ?? '';
+            el.classList?.remove('is-invalid');
+            entry.initial[f.k] = read(entry.form, f);
+        }
+    }
+    const changedFields = (entry) => fieldsOf(entry.sec).filter((f) =>
+        f.type === 'password' ? read(entry.form, f) !== '' : read(entry.form, f) !== entry.initial[f.k]);
+
+    function refresh(entry) {
+        const dirty = changedFields(entry).length > 0;
+        container.querySelector(`[data-nav="${entry.sec.id}"] [data-dirty]`).classList.toggle('d-none', !dirty);
+        const form = entry.form;
+        form.querySelector('[data-unsaved]')?.classList.toggle('d-none', !dirty);
+        form.querySelectorAll('[type=submit], [data-reset]').forEach((b) => { b.disabled = !dirty; });
+        // The tests read what is saved: not while the section differs from it
+        if (entry.sec.test) {
+            form.querySelector(`#${entry.sec.test.id}`).disabled = dirty;
+            form.querySelector('[data-test-note]').textContent = dirty ? 'Salvare prima di provare.' : 'Usa le impostazioni salvate.';
+        }
+    }
+
+    for (const entry of forms) {
+        write(entry);
+        if (ro) continue;
+        refresh(entry);
+        entry.form.addEventListener('input', () => refresh(entry));
+        entry.form.addEventListener('change', () => refresh(entry));
+        entry.form.querySelector('[data-reset]').addEventListener('click', () => { write(entry); refresh(entry); });
+        entry.form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!validateForm(entry.form)) return;
+            const fields = changedFields(entry);
+            if (!fields.length) return;
+            const btn = entry.form.querySelector('[type=submit]');
+            btn.disabled = true;
+            try {
+                state = await apiPatch('/settings/system', Object.fromEntries(fields.map((f) => [f.k, read(entry.form, f)])));
+                write(entry, fields.map((f) => f.k));
+                showToast(`${entry.sec.title}: impostazioni salvate`, 'success');
+            } catch (err) {
+                showToast(err.message, 'error', 8000);
+            }
+            refresh(entry);
+        });
+    }
+
+    // --- certificates (their own actions, nothing to save)
+    const certSec = SECTIONS.find((x) => x.id === 'certs');
+    async function refreshCerts() {
+        const el = panel('certs');
+        el.innerHTML = certPanel(certSec, await apiGet('/settings/ui-certificate').catch(() => null), ro);
+        el.querySelector('#ui-cert-upload')?.addEventListener('click', () => uiCertUpload(refreshCerts));
+        el.querySelector('#ui-cert-reset')?.addEventListener('click', () => uiCertReset(refreshCerts));
+    }
+    await refreshCerts();
+
+    container.querySelector('#smtp-test')?.addEventListener('click', async (e) => {
+        e.currentTarget.disabled = true;
         try {
             const r = await apiPost('/settings/smtp/test', {});
             showToast(`E-mail di prova inviata a ${r.sent_to.join(', ')}`, 'success', 6000);
         } catch (err) { showToast(err.message, 'error', 8000); }
+        e.target.closest('button').disabled = false;
     });
-    container.querySelector('#ldap-test')?.addEventListener('click', () => {
-        const el = formModal('Prova login LDAP', `
-            ${notice('info', '', [['ti-info-circle', 'Usa le impostazioni <b>salvate</b>; non crea l\'utente, mostra cosa otterrebbe al login.']])}
-            ${field('username', 'Utente', { required: true, maxlength: 100, attrs: 'autocomplete="off"', example: 'mario.rossi' })}
-            ${field('password', 'Password', { type: 'password', required: true, attrs: 'autocomplete="new-password"' })}
-            <div id="ldap-result"></div>`,
-        async (form) => {
-            const box = el.querySelector('#ldap-result');
-            const r = await apiPost('/settings/ldap/test', formData(form));
-            const m = r.mapping;
-            box.innerHTML = notice(m ? 'success' : 'warning', m ? 'Login consentito' : 'Login rifiutato: nessun gruppo mappato', [
-                ['ti-id', `<span class="font-monospace small">${escapeHtml(r.dn)}</span>`],
-                m ? ['ti-user-shield', `Ruolo <b>${escapeHtml(m.role)}</b>, accesso <b>${escapeHtml(m.access)}</b>${m.group_id ? `, gruppo <span class="font-monospace">${escapeHtml(m.group_id)}</span>` : ''}`] : null,
-                ['ti-users-group', `Gruppi: ${r.groups.map(g => `<span class="font-monospace small">${escapeHtml(g)}</span>`).join(', ') || 'nessuno'}`]]);
-            return false;
-        }, { submitText: 'Prova', icon: 'ti-plug-connected' });
-    });
-    container.querySelector('#manager-settings').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const body = {};
-        for (const [, fields] of FIELDS) {
-            for (const [k, , type] of fields) {
-                const input = e.target.elements[k];
-                if (type === 'checkbox') { body[k] = input.checked; continue; }
-                const v = input.value.trim();
-                if (type === 'password' && !v) continue;
-                body[k] = type === 'number' ? Number(v) : v;
-            }
+    container.querySelector('#ldap-test')?.addEventListener('click', ldapTest);
+
+    // --- menu
+    function show(id) {
+        active = id;
+        try { sessionStorage.setItem('manager-settings-section', id); } catch { /* private window */ }
+        for (const x of SECTIONS) {
+            panel(x.id).classList.toggle('d-none', x.id !== id);
+            container.querySelector(`[data-nav="${x.id}"]`).classList.toggle('active', x.id === id);
         }
-        try {
-            await apiPatch('/settings/system', body);
-            showToast('Impostazioni salvate', 'success');
-        } catch (err) {
-            showToast(err.message, 'error', 6000);
-        }
-    });
+    }
+    container.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => show(b.dataset.nav)));
+    show(active);
 }

@@ -145,6 +145,24 @@ async def ui_certificate_reset(current_user: User = Depends(require_permission("
         raise HTTPException(503, str(e))
 
 
+class LdapSearch(BaseModel):
+    query: str = Field(min_length=2, max_length=100)
+
+
+@router.post("/ldap/search")
+async def ldap_search(body: LdapSearch, session: AsyncSession = Depends(get_session),
+                      current_user: User = Depends(require_permission("manager.manage"))):
+    """Users and groups of the directory to build the access rules from
+    (the saved connection; names only, no passwords)."""
+    import asyncio
+    from manager.ldapauth import LdapError, search
+    row = await get_system_settings(session)
+    try:
+        return await asyncio.to_thread(search, row, body.query)
+    except (LdapError, ValueError) as e:
+        raise HTTPException(400, f"LDAP: {e}")
+
+
 class LdapTest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=500)

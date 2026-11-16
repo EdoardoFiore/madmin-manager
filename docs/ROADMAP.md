@@ -493,7 +493,7 @@ None of these touches the agent. They can be done at any time, also in parallel 
 
 ### 10.3 LDAP users
 
-- [x] LDAP/AD as an authentication source (`manager/ldapauth.py`): service-account search, bind as the user over ldaps or StartTLS with the certificate verified, groups from `memberOf` or `groupOfNames`/`groupOfUniqueNames`, mappings to `role`, `access` and `group_id`; users created at the first login; a local username is never looked up in LDAP.
+- [x] LDAP/AD as an authentication source (`manager/ldapauth.py`): service-account search, bind as the user over ldaps or StartTLS with the certificate verified, groups from `memberOf` or `groupOfNames`/`groupOfUniqueNames`, access rules per user or per group giving `role`, `access` and `group_id` (a user rule wins); users created at the first login; a local username is never looked up in LDAP.
 - [x] TOTP enforced for LDAP users.
 - [x] Sync every 15 minutes: removed from the directory or the mapped groups → disabled, sessions revoked; mapping changed → updated, sessions revoked, SSH keys back to approval. Tested against OpenLDAP (17 cases).
 

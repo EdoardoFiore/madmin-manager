@@ -3,11 +3,14 @@ LDAP / Active Directory users (ROADMAP 10.3).
 
 A login with a username that is not a local user is checked against the
 directory: the service account finds the user's entry (ldap_user_filter
-under ldap_base_dn), a bind as that entry checks the password, the user's
-groups (memberOf, or the groupOfNames / groupOfUniqueNames that list it)
-pick the first matching mapping, which gives role, access and manager
-group. The user is created (auth_source "ldap") at the first login and
-updated at every login; without a matching mapping the login is refused.
+under ldap_base_dn), a bind as that entry checks the password, and the
+access rules (ldap_mappings) say whether the user may enter and how. A rule
+names one user (the login name) or one group of the directory (memberOf, or
+the groupOfNames / groupOfUniqueNames that list the user) and gives role,
+access and manager group. A rule for the user wins over the rules for
+groups; among groups the first match wins. The user is created
+(auth_source "ldap") at the first login and updated at every login;
+without a matching rule the login is refused.
 
 - The connection is always encrypted: ldaps://, or ldap:// with StartTLS;
   the directory's certificate is verified (ldap_ca_pem, or the system CAs).
@@ -33,6 +36,7 @@ from sqlmodel import select
 logger = logging.getLogger("madmin_manager.ldap")
 
 SYNC_INTERVAL = 900
+SEARCH_LIMIT = 10   # users, and groups, per search
 ROLES = ("superuser", "partner", "customer")
 
 
@@ -41,21 +45,28 @@ class LdapError(Exception):
 
 
 def parse_mappings(raw: str) -> List[dict]:
+    """The access rules: {"user": login name} or {"group": group DN}, with role,
+    access and (partner, customer) group_id. Names are kept lower-case."""
     try:
         items = json.loads(raw or "[]")
     except ValueError:
-        raise ValueError("Mappature LDAP: JSON non valido")
+        raise ValueError("Regole LDAP: JSON non valido")
     if not isinstance(items, list):
-        raise ValueError("Mappature LDAP: una lista di oggetti")
+        raise ValueError("Regole LDAP: una lista di oggetti")
     out = []
     for m in items:
-        if not isinstance(m, dict) or not str(m.get("group", "")).strip():
-            raise ValueError("Mappatura LDAP senza 'group' (DN del gruppo)")
+        if not isinstance(m, dict):
+            raise ValueError("Regole LDAP: una lista di oggetti")
+        user, group = str(m.get("user", "")).strip(), str(m.get("group", "")).strip()
+        if bool(user) == bool(group):
+            raise ValueError("Ogni regola LDAP indica un utente ('user') o un gruppo ('group'), non entrambi")
+        who = user or group
         if m.get("role") not in ROLES or m.get("access") not in ("rw", "ro"):
-            raise ValueError(f"Mappatura {m.get('group')}: role {ROLES}, access rw|ro")
+            raise ValueError(f"Regola {who}: ruolo {ROLES}, accesso rw|ro")
         if m["role"] != "superuser" and not m.get("group_id"):
-            raise ValueError(f"Mappatura {m.get('group')}: group_id obbligatorio per {m['role']}")
-        out.append({"group": str(m["group"]).strip().lower(), "role": m["role"], "access": m["access"],
+            raise ValueError(f"Regola {who}: scegliere il gruppo del manager per {m['role']}")
+        out.append({"user": user.lower() or None, "group": group.lower() or None,
+                    "role": m["role"], "access": m["access"],
                     "group_id": m.get("group_id") if m["role"] != "superuser" else None})
     return out
 
@@ -115,11 +126,58 @@ def _lookup(settings, conn, username: str) -> Optional[Tuple[str, dict, List[str
     return dn, {"mail": (mail[0] if isinstance(mail, list) and mail else mail) or None}, sorted(set(groups))
 
 
-def match(settings, groups: List[str]) -> Optional[dict]:
-    for m in parse_mappings(settings.ldap_mappings):
-        if m["group"] in groups:
+def match(settings, groups: List[str], username: str = "") -> Optional[dict]:
+    """The rule for this user, else the first rule for one of their groups."""
+    rules = parse_mappings(settings.ldap_mappings)
+    for m in rules:
+        if m["user"] and m["user"] == username.strip().lower():
+            return m
+    for m in rules:
+        if m["group"] and m["group"] in groups:
             return m
     return None
+
+
+def search(settings, query: str) -> List[dict]:
+    """Blocking: users and groups of the directory matching `query`, for the
+    settings page to pick from: [{kind, label, value, dn, mail}]."""
+    from ldap3 import SUBTREE
+    from ldap3.utils.conv import escape_filter_chars
+    if not settings.ldap_url or not settings.ldap_base_dn:
+        raise LdapError("Server e base di ricerca non configurati")
+    q = escape_filter_chars(query.strip())
+    if len(q) < 2:
+        raise LdapError("Almeno 2 caratteri")
+
+    def first(v):
+        return str((v[0] if isinstance(v, list) and v else v) or "")
+
+    svc = _service(settings)
+    try:
+        out = []
+        svc.search(settings.ldap_base_dn,
+                   "(&(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+                   f"(|(cn=*{q}*)(sAMAccountName=*{q}*)(uid=*{q}*)(mail=*{q}*)(displayName=*{q}*)))",
+                   SUBTREE, attributes=["sAMAccountName", "uid", "cn", "displayName", "mail"], size_limit=SEARCH_LIMIT)
+        for e in svc.response:
+            if e.get("type") != "searchResEntry":
+                continue
+            a = e.get("attributes") or {}
+            login = first(a.get("sAMAccountName")) or first(a.get("uid"))
+            if login:
+                out.append({"kind": "user", "label": first(a.get("displayName")) or first(a.get("cn")) or login,
+                            "value": login, "dn": e["dn"], "mail": first(a.get("mail")) or None})
+        svc.search(settings.ldap_base_dn,
+                   f"(&(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames))(cn=*{q}*))",
+                   SUBTREE, attributes=["cn", "description"], size_limit=SEARCH_LIMIT)
+        for e in svc.response:
+            if e.get("type") == "searchResEntry":
+                a = e.get("attributes") or {}
+                out.append({"kind": "group", "label": first(a.get("cn")) or e["dn"], "value": e["dn"],
+                            "dn": e["dn"], "mail": None})
+        return out
+    finally:
+        svc.unbind()
 
 
 def check(settings, username: str, password: str) -> dict:
@@ -136,7 +194,7 @@ def check(settings, username: str, password: str) -> dict:
     dn, attrs, groups = found
     user_conn = _connect(settings, dn, password)
     user_conn.unbind()
-    return {"dn": dn, "mail": attrs["mail"], "groups": groups, "mapping": match(settings, groups)}
+    return {"dn": dn, "mail": attrs["mail"], "groups": groups, "mapping": match(settings, groups, username)}
 
 
 async def _apply(session, user, mapping: dict, mail: Optional[str]) -> bool:
@@ -149,8 +207,10 @@ async def _apply(session, user, mapping: dict, mail: Optional[str]) -> bool:
         from manager.notify import security
         start_cooldown(user)
         security(f"Nuovo superuser LDAP: {user.username}",
-                 f"L'utente LDAP {user.username} è superuser ({mapping['access']}) per il gruppo "
-                 f"{mapping['group']} della directory. Per 24 ore non potrà approvare chiavi SSH.")
+                 f"L'utente LDAP {user.username} è superuser ({mapping['access']}) "
+                 + ("per la regola dedicata all'utente." if mapping["user"] else
+                    f"per il gruppo {mapping['group']} della directory.")
+                 + " Per 24 ore non potrà approvare chiavi SSH.")
     user.role, user.access, user.group_id = mapping["role"], mapping["access"], mapping["group_id"]
     if mail:
         user.email = mail[:255]
@@ -178,13 +238,13 @@ async def login(session, username: str, password: str):
         return None
     mapping = res["mapping"]
     if mapping is None:
-        logger.warning("LDAP login of %s: no mapped group (%s)", username, ", ".join(res["groups"])[:300])
+        logger.warning("LDAP login of %s: no rule for the user or its groups (%s)", username, ", ".join(res["groups"])[:300])
         return None
     if mapping["group_id"]:
         group = await session.get(InstanceGroup, mapping["group_id"])
         expected = "partner" if mapping["role"] == "partner" else "customer"
         if group is None or group.kind != expected:
-            logger.error("LDAP mapping %s: manager group %s missing or not a %s", mapping["group"],
+            logger.error("LDAP rule %s: manager group %s missing or not a %s", mapping["user"] or mapping["group"],
                          mapping["group_id"], expected)
             return None
     user = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
@@ -230,14 +290,14 @@ async def sync_once() -> int:
         changed = 0
         for u in users:
             entry = found.get(u.username)
-            mapping = match(settings, entry[2]) if entry else None
+            mapping = match(settings, entry[2], u.username) if entry else None
             if mapping is None:
                 u.is_active = False
                 auth_service.revoke_sessions(u)
                 session.add(u)
                 changed += 1
                 logger.warning("LDAP user %s disabled: %s", u.username,
-                               "not in the directory" if entry is None else "in no mapped group")
+                               "not in the directory" if entry is None else "no rule for the user or its groups")
             elif await _apply(session, u, mapping, entry[1]["mail"]):
                 changed += 1
                 logger.info("LDAP user %s: now %s %s", u.username, mapping["role"], mapping["access"])
