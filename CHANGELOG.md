@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.11.0] - 2026-11-17
+
+### Added
+- LDAP / Active Directory: StartTLS on `ldap://` can be turned off, for a controller that has no certificate ("startTLS failed"). The connection is then in clear: the passwords of the service account and of the users travel unencrypted at every login. On by default and for existing installs (schema step 0009, `ldap_starttls`); `ldaps://` is always encrypted.
+
 ## [1.10.0] - 2026-11-17
 
 ### Added

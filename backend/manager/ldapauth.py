@@ -12,7 +12,9 @@ groups; among groups the first match wins. The user is created
 (auth_source "ldap") at the first login and updated at every login;
 without a matching rule the login is refused.
 
-- The connection is always encrypted: ldaps://, or ldap:// with StartTLS;
+- The connection is encrypted: ldaps://, or ldap:// with StartTLS (ldap_starttls,
+  on by default; off = a plain ldap:// connection, passwords in clear, for a
+  controller that has no certificate: the administrator's choice);
   the directory's certificate is verified (ldap_ca_pem, or the system CAs)
   unless ldap_verify_cert is off (a self-signed certificate, or an address
   in the URL): then it is encrypted but the server is not authenticated.
@@ -98,7 +100,7 @@ def _connect(settings, user: str, password: str):
     try:
         conn = Connection(_server(settings), user=user, password=password, receive_timeout=15, raise_exceptions=False)
         conn.open()
-        if not settings.ldap_url.startswith("ldaps://"):
+        if not settings.ldap_url.startswith("ldaps://") and settings.ldap_starttls:
             if not conn.start_tls():
                 raise LdapError(f"StartTLS non riuscito: {conn.result.get('description')}")
         if not conn.bind():
