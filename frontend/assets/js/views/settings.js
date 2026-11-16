@@ -51,12 +51,13 @@ const SECTIONS = [
             { k: 'ldap_enabled', label: 'Login con gli utenti della directory', type: 'checkbox', hint: 'Entra solo chi corrisponde a una regola di accesso qui sotto. La 2FA del manager è obbligatoria anche per loro.' },
         ] },
         { title: 'Connessione', fields: [
-            { k: 'ldap_url', label: 'Server', col: 'col-md-6', mono: true, placeholder: 'ldaps://dc.example.com:636', hint: '<code>ldaps://host:636</code> oppure <code>ldap://host</code> (StartTLS). Nome DNS, non IP: deve corrispondere al certificato.' },
+            { k: 'ldap_url', label: 'Server', col: 'col-md-6', mono: true, placeholder: 'ldaps://dc.example.com:636', hint: '<code>ldaps://host:636</code> oppure <code>ldap://host</code> (StartTLS). Con la verifica del certificato attiva serve un nome DNS, non un IP: deve corrispondere al certificato.' },
             { k: 'ldap_base_dn', label: 'Base di ricerca', col: 'col-md-6', mono: true, placeholder: 'dc=example,dc=com' },
             { k: 'ldap_bind_dn', label: 'Account di servizio', col: 'col-md-6', mono: true, placeholder: 'cn=manager,ou=service,dc=example,dc=com', hint: 'Usato solo per cercare utenti e gruppi.' },
             { k: 'ldap_bind_password', label: 'Password dell\'account di servizio', type: 'password', col: 'col-md-6', hint: 'Vuoto = resta quella salvata.' },
             { k: 'ldap_user_filter', label: 'Filtro utente', col: 'col-12', mono: true, hint: '<code>{username}</code> = il nome inserito al login.' },
-            { k: 'ldap_ca_pem', label: 'CA del server', type: 'textarea', rows: 4, col: 'col-12', placeholder: '-----BEGIN CERTIFICATE-----', hint: 'PEM. Vuoto = le CA di sistema (certificato pubblico).' },
+            { k: 'ldap_verify_cert', label: 'Verifica il certificato del server', type: 'checkbox', hint: 'Disattivata, la connessione resta cifrata ma il server non viene riconosciuto: chi si mette in mezzo può leggere le password. Solo per una rete di cui ti fidi (certificato autofirmato, indirizzo IP).' },
+            { k: 'ldap_ca_pem', label: 'CA del server', type: 'textarea', rows: 4, col: 'col-12', placeholder: '-----BEGIN CERTIFICATE-----', hint: 'PEM. Vuoto = le CA di sistema (certificato pubblico). Non serve con la verifica disattivata.' },
         ] },
         { title: 'Chi può entrare', note: 'Una regola per ogni utente o gruppo della directory ammesso, con il tipo di accesso. Chi non corrisponde a nessuna regola non entra.', fields: [
             { k: 'ldap_mappings', type: 'rules' },

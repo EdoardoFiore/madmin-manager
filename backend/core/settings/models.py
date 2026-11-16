@@ -67,6 +67,8 @@ class SystemSettings(SQLModel, table=True):
     ldap_base_dn: str = Field(default="", max_length=500)
     ldap_user_filter: str = Field(default="(|(uid={username})(sAMAccountName={username}))", max_length=500)
     ldap_ca_pem: str = Field(default="", max_length=20000)     # CA of the directory; "" = system CAs
+    # False: still encrypted, but the server is not checked (self-signed or an IP in the URL)
+    ldap_verify_cert: bool = Field(default=True)
     # Access rules: [{"user": "<login name>" | "group": "<group DN>", "role": "superuser|partner|customer",
     #   "access": "rw|ro", "group_id": "<manager group, partner/customer only>"}].
     # A rule for the user wins over the group rules, then the first group rule that matches
@@ -116,6 +118,7 @@ class SystemSettingsUpdate(SQLModel):
     ldap_base_dn: Optional[str] = None
     ldap_user_filter: Optional[str] = None
     ldap_ca_pem: Optional[str] = None
+    ldap_verify_cert: Optional[bool] = None
     ldap_mappings: Optional[str] = None
     autoupdate_time: Optional[str] = None
     autoupdate_tz: Optional[str] = None

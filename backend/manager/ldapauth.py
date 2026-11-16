@@ -13,7 +13,9 @@ groups; among groups the first match wins. The user is created
 without a matching rule the login is refused.
 
 - The connection is always encrypted: ldaps://, or ldap:// with StartTLS;
-  the directory's certificate is verified (ldap_ca_pem, or the system CAs).
+  the directory's certificate is verified (ldap_ca_pem, or the system CAs)
+  unless ldap_verify_cert is off (a self-signed certificate, or an address
+  in the URL): then it is encrypted but the server is not authenticated.
 - An empty password is refused before any bind (an empty bind is anonymous).
 - A local username is never looked up in LDAP: an LDAP account with the name
   of a local superuser cannot take it over, and local superusers always work.
@@ -77,8 +79,12 @@ def parse_mappings(raw: str) -> List[dict]:
 
 def _server(settings):
     from ldap3 import Server, Tls
-    tls = Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLS_CLIENT,
-              ca_certs_data=settings.ldap_ca_pem or None)
+    if settings.ldap_verify_cert:
+        tls = Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLS_CLIENT,
+                  ca_certs_data=settings.ldap_ca_pem or None)
+    else:
+        # PROTOCOL_TLS_CLIENT checks the host name by itself and refuses CERT_NONE
+        tls = Tls(validate=ssl.CERT_NONE)
     return Server(settings.ldap_url, use_ssl=settings.ldap_url.startswith("ldaps://"), tls=tls,
                   connect_timeout=10, get_info=None)
 
