@@ -8,6 +8,15 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.7.0] - 2026-11-16
+
+### Added
+- The certificate of the agent port renews by itself: under 60 days left the service re-issues it with the names it has and the same CA (the instances pin the CA: nothing changes for them) and has nginx reloaded. Every day the certificate the agent port presents is compared with the file, and a reload is asked for while they differ; an e-mail if nginx does not take it.
+- E-mails for what does not renew by itself: the manager CA (365, 180, 90, 60 days, daily under 30) and an own UI certificate (30, 14, 7, 3, 1 days, daily once expired). Settings → Certificato della UI also shows the end of the agent port certificate and of the CA.
+
+### Changed
+- The agent port certificate never ends after its CA. `AGENT_PORT` is written to `.env` (rerun `setup-manager.sh`).
+
 ## [1.6.0] - 2026-11-16
 
 ### Added

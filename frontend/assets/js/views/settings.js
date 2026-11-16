@@ -86,6 +86,12 @@ function uiCertCard(c, ro) {
                     : 'I browser non conoscono la CA del manager e mostrano un avviso: caricare un certificato proprio per toglierlo.'}
                     Riguarda solo la UI, non la porta delle istanze.</div></div>
             ${details}
+            ${c.endpoint ? `<div class="mb-3 pt-2 border-top small">
+                <div class="text-muted mb-1">Porta delle istanze</div>
+                <div>Certificato: ${fmtDate(c.endpoint.not_after)} <span class="text-muted">(rinnovo automatico)</span></div>
+                <div>CA del manager: ${fmtDate(c.ca.not_after)}
+                    ${c.ca.days_left < 365 ? `<span class="badge bg-${c.ca.days_left < 90 ? 'danger' : 'warning'}-lt ms-1" title="Non si rinnova da sola: python -m manager.pki rotate-ca">${c.ca.days_left} giorni: da ruotare</span>` : ''}</div>
+            </div>` : ''}
             ${c.installed ? '' : notice('warning', '', ['Non gestito da questa installazione: rieseguire <code>setup-manager.sh</code> di questa versione.'])}
             ${ro || !c.installed ? '' : `<div class="btn-list">
                 <button type="button" class="btn btn-outline-primary btn-sm" id="ui-cert-upload"><i class="ti ti-upload me-1"></i>Carica certificato</button>

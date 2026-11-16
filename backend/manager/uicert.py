@@ -241,8 +241,8 @@ def build(cert_pem: str, key_pem: str, chain_pem: str = "") -> Tuple[bytes, byte
 
 # --- Applying a change ---
 
-async def _served() -> Optional[str]:
-    """sha256 of the certificate nginx presents on the UI port right now."""
+async def served(port: Optional[int] = None) -> Optional[str]:
+    """sha256 of the certificate nginx presents right now (UI port by default)."""
     # Not a trust decision: the certificate is only compared with the one just
     # written, so it is read without verification (it may be self-signed).
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -250,7 +250,7 @@ async def _served() -> Optional[str]:
     ctx.verify_mode = ssl.CERT_NONE
     try:
         _, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", get_settings().ui_port, ssl=ctx), 3)
+            asyncio.open_connection("127.0.0.1", port or get_settings().ui_port, ssl=ctx), 3)
     except (OSError, asyncio.TimeoutError):
         return None
     try:
@@ -264,7 +264,8 @@ def request_reload() -> None:
     _write("reload", f"{time.time()}\n".encode())
 
 
-async def _reload(expected: str) -> bool:
+async def reload(expected: str, port: Optional[int] = None) -> bool:
+    """Ask for an nginx reload until the port presents the expected certificate."""
     deadline = time.monotonic() + RELOAD_WAIT
     asked = None
     while time.monotonic() < deadline:
@@ -272,7 +273,7 @@ async def _reload(expected: str) -> bool:
             request_reload()
             asked = time.monotonic()
         await asyncio.sleep(0.5)
-        if await _served() == expected:
+        if await served(port) == expected:
             return True
     return False
 
@@ -286,7 +287,7 @@ async def apply(state: State) -> dict:
         previous = _snapshot()
         _write_state(state)
         try:
-            ok = await _reload(_current_fp())
+            ok = await reload(_current_fp())
         except Exception:
             ok = False
         if not ok:

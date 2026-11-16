@@ -29,8 +29,9 @@ Open towards the manager: UI port (operators, filtered), agent port 8443 (instan
 
 Two certificates, never mixed:
 
-- **Agent port (8443)**: issued by the manager CA for `--host/--ip` (`DATA_DIR/pki/server.pem`, 825 days). The instances trust that CA only: never put another certificate there. To re-issue (same CA, nothing changes for the instances): rerun the installer, or `python -m manager.pki server-cert --host ... [--ip ...]` as `madmin-manager` in `backend/` and `systemctl reload nginx`.
-- **UI port**: the same certificate by default, so browsers warn. Settings → Certificato della UI installs your own (certificate, key without password, optional CA bundle; PEM; your 2FA code). nginx is reloaded and asked for the certificate it presents: if it is not the new one, the previous comes back. It does not renew by itself: upload the new one before the expiry shown there. A reinstall and a restore keep it.
+- **Agent port (8443)**: issued by the manager CA for `--host/--ip` (`DATA_DIR/pki/server.pem`, 825 days). The instances trust that CA only: never put another certificate there. It renews by itself: under 60 days left the service re-issues it (same names, same CA, nothing changes for the instances) and has nginx reloaded; an e-mail goes out if nginx does not take it. By hand: rerun the installer, or `python -m manager.pki server-cert --host ... [--ip ...]` as `madmin-manager` in `backend/` (nginx is reloaded at the next daily check, or `systemctl reload nginx`).
+- **Manager CA** (10 years): does not renew by itself. E-mails at 365, 180, 90, 60 days and daily under 30; Settings shows its end. Rotate it with `python -m manager.pki rotate-ca` (`PROTOCOL.md`).
+- **UI port**: the same certificate by default, so browsers warn. Settings → Certificato della UI installs your own (certificate, key without password, optional CA bundle; PEM; your 2FA code). nginx is reloaded and asked for the certificate it presents: if it is not the new one, the previous comes back. It does not renew by itself: upload the new one before the expiry shown there (e-mails at 30, 14, 7, 3, 1 days). A reinstall and a restore keep it.
 
 If a certificate locks you out of the UI: `cd /opt/madmin-manager/backend && sudo -u madmin-manager ../venv/bin/python -m manager.uicert reset && nginx -t && systemctl reload nginx`.
 

@@ -106,8 +106,14 @@ class UICertificateUpload(BaseModel):
 @router.get("/ui-certificate")
 async def ui_certificate(current_user: User = Depends(require_permission("manager.view"))):
     """The certificate nginx serves on the UI port (never the agent endpoint's)."""
-    from manager import uicert
-    return uicert.info()
+    from manager import pki, uicert
+    out = uicert.info()
+    try:
+        # The endpoint certificate renews by itself, the CA does not (rotate-ca)
+        out.update(pki.expiry())
+    except (pki.PKIError, ValueError):
+        pass
+    return out
 
 
 @router.post("/ui-certificate")

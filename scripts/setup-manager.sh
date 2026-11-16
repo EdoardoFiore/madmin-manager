@@ -209,6 +209,7 @@ SECRET_KEY=$SECRET_KEY
 DEBUG=false
 DATA_DIR=$DATA_DIR
 UI_PORT=$UI_PORT
+AGENT_PORT=$AGENT_PORT
 EOF
 chown -R root:root "$INSTALL_DIR/backend" "$INSTALL_DIR/frontend"
 chown root:"$SERVICE_USER" "$INSTALL_DIR/backend/.env"

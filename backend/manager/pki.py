@@ -32,6 +32,8 @@ enrollment token: instances pin it on first contact.
 
     python -m manager.pki init --host manager.example.com [--ip 10.0.0.5] [--force]
     python -m manager.pki server-cert --host ... [--ip ...]   (re-issue, same CA)
+                                    (the service does it by itself under 60 days
+                                     left, with the names it has: manager.certwatch)
     python -m manager.pki fingerprint
     python -m manager.pki trust-bundle                        (write ca_trust.pem)
     python -m manager.pki rotate-ca status|prepare|activate|retire [--force]
@@ -57,6 +59,7 @@ from core import secrets as data_secrets
 
 AGENT_CERT_DAYS = 90
 SERVER_CERT_DAYS = 825
+SERVER_RENEW_DAYS = 60    # re-issued by the service when less is left (manager.certwatch)
 CA_DAYS = 3650
 
 
@@ -247,7 +250,8 @@ def issue_server_cert(hosts: List[str], ips: List[str]) -> None:
         .public_key(key.public_key())
         .serial_number(_serial())
         .not_valid_before(now - timedelta(minutes=5))
-        .not_valid_after(now + timedelta(days=SERVER_CERT_DAYS))
+        # Never past its CA: it would not verify anyway
+        .not_valid_after(min(now + timedelta(days=SERVER_CERT_DAYS), ca_cert.not_valid_after_utc))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
@@ -259,10 +263,43 @@ def issue_server_cert(hosts: List[str], ips: List[str]) -> None:
     _write("server.json", json.dumps({"hosts": hosts, "ips": ips}).encode())
 
 
-# --- CA rotation (see the module docstring) ---
-
 def _fingerprint(cert: x509.Certificate) -> str:
     return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
+def server_cert() -> x509.Certificate:
+    return x509.load_pem_x509_certificates(_read("server.pem"))[0]
+
+
+def server_cert_fingerprint() -> str:
+    return _fingerprint(server_cert())
+
+
+def expiry() -> dict:
+    """When the endpoint certificate and the CA end: {name: {not_after, days_left}}."""
+    now = datetime.now(timezone.utc)
+    return {name: {"not_after": cert.not_valid_after_utc.isoformat(),
+                   "days_left": (cert.not_valid_after_utc - now).days}
+            for name, cert in (("endpoint", server_cert()), ("ca", x509.load_pem_x509_certificate(ca_pem())))}
+
+
+def renew_server_cert_if_due() -> bool:
+    """Re-issue the endpoint certificate, same names and CA, when it has less
+    than SERVER_RENEW_DAYS left. The instances pin the CA, not this
+    certificate: nothing changes for them. nginx must then be reloaded."""
+    cert = server_cert()
+    ca_cert = x509.load_pem_x509_certificate(ca_pem())
+    if cert.not_valid_after_utc - datetime.now(timezone.utc) >= timedelta(days=SERVER_RENEW_DAYS):
+        return False
+    # Already as long as its CA allows: only a CA rotation gives more
+    if cert.not_valid_after_utc >= ca_cert.not_valid_after_utc:
+        return False
+    server = json.loads(_read("server.json"))
+    issue_server_cert(server.get("hosts") or [], server.get("ips") or [])
+    return True
+
+
+# --- CA rotation (see the module docstring) ---
 
 
 def write_trust_bundle() -> None:

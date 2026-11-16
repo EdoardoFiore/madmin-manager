@@ -35,6 +35,8 @@ backend/
     pki.py           agent CA, endpoint certificate, SSH CA, license key; CLI python -m manager.pki
     uicert.py        certificate of the UI port (DATA_DIR/ui-tls, own or links to the endpoint's);
                      nginx reload through madmin-manager-nginx-reload.path; CLI python -m manager.uicert
+    certwatch.py     daily: endpoint certificate re-issued under 60 days and loaded by nginx; e-mails
+                     for the CA and an own UI certificate near their end
     agents/          protocol.py (IDENTICAL to madmin/backend/core/manager/protocol.py),
                      auth (client cert), registry (live connections), dispatcher (commands), router (/agent/*)
     groups.py        hierarchy (manager) -> customer | (manager) -> partner -> customer, subtree_ids
