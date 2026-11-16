@@ -545,7 +545,9 @@ function renderUsers() {
                 <td>${user.email ? escapeHtml(user.email) : '<span class="text-muted">-</span>'}</td>
                 <td>${accessBadges(user)}</td>
                 <td>${twoFaIcon}</td>
-                <td>${statusBadge(user.is_active)}</td>
+                <td>${!user.is_active && user.disabled_by === 'ldap'
+                    ? '<span class="badge bg-secondary-lt" title="Disabilitato dalla sincronizzazione LDAP: rientra al prossimo login, se la directory lo consente di nuovo">Disabilitato dalla directory</span>'
+                    : statusBadge(user.is_active)}</td>
                 <td>${user.last_login ? formatDate(user.last_login) : `<span class="text-muted">${t('users.never')}</span>`}</td>
                 <td>
                     ${showActions ? `

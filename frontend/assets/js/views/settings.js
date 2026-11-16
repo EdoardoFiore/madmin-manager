@@ -396,6 +396,7 @@ function ldapTest() {
         const m = r.mapping;
         box.innerHTML = notice(m ? 'success' : 'warning', m ? 'Login consentito' : 'Login rifiutato: nessuna regola per questo utente o per i suoi gruppi', [
             ['ti-id', `<span class="font-monospace small">${escapeHtml(r.dn)}</span>`],
+            ['ti-user', `Nome nel manager: <span class="font-monospace">${escapeHtml(r.login)}</span>`],
             m ? ['ti-list-check', `Regola per ${m.user ? 'l\'utente' : 'il gruppo'} <span class="font-monospace small">${escapeHtml(m.user || m.group)}</span>`] : null,
             m ? ['ti-user-shield', `Ruolo <b>${escapeHtml(m.role)}</b>, accesso <b>${escapeHtml(m.access)}</b>${m.group_id ? `, gruppo <span class="font-monospace">${escapeHtml(m.group_id)}</span>` : ''}`] : null,
             ['ti-users-group', `Gruppi: ${r.groups.map(g => `<span class="font-monospace small">${escapeHtml(g)}</span>`).join(', ') || 'nessuno'}`]]);

@@ -67,6 +67,9 @@ class User(SQLModel, table=True):
 
     # Status
     is_active: bool = Field(default=True)
+    # Who disabled the user: "" (an administrator, or never) or "ldap" (the
+    # directory sync: let in again by the directory at the next login)
+    disabled_by: str = Field(default="", max_length=10)
     is_protected: bool = Field(default=False)  # First setup user — cannot be modified or deleted by others
 
     # Access (see the module docstring). Defaults are the least privileged.
@@ -197,6 +200,7 @@ class UserResponse(SQLModel):
     username: str
     email: Optional[str]
     is_active: bool
+    disabled_by: str = ""
     is_superuser: bool
     is_protected: bool = False
     role: str

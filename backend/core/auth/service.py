@@ -313,6 +313,8 @@ async def update_user(session: AsyncSession, user_id: uuid.UUID, user_data: User
         user.email = user_data.email
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
+        # An administrator's choice: the directory sync no longer re-enables
+        user.disabled_by = ""
     # Role, access and group arrive already checked by the router
     if user_data.role is not None:
         user.role = user_data.role

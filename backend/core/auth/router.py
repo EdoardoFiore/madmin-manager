@@ -143,6 +143,7 @@ def _user_response(user: User, group_paths: Optional[Dict[str, str]] = None) -> 
         username=user.username,
         email=user.email,
         is_active=user.is_active,
+        disabled_by=user.disabled_by,
         is_superuser=user.is_superuser,
         is_protected=user.is_protected,
         role=user.role,

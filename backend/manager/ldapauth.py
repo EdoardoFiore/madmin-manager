@@ -12,6 +12,10 @@ groups; among groups the first match wins. The user is created
 (auth_source "ldap") at the first login and updated at every login;
 without a matching rule the login is refused.
 
+The manager username of an LDAP user is its login name in the directory
+(sAMAccountName, else uid) in lower case, whatever was typed: the directory
+ignores case, so "MRossi" and "mrossi" are one user, not two.
+
 - The connection is encrypted: ldaps://, or ldap:// with StartTLS (ldap_starttls,
   on by default; off = a plain ldap:// connection, passwords in clear, for a
   controller that has no certificate: the administrator's choice);
@@ -23,9 +27,14 @@ without a matching rule the login is refused.
   of a local superuser cannot take it over, and local superusers always work.
 - TOTP is enforced by the manager for LDAP users too (totp_enforced).
 - sync_task re-reads every LDAP user every SYNC_INTERVAL: removed from the
-  directory or from every mapped group, the user is disabled and its
+  directory or from every mapped group, or disabled there (AD
+  userAccountControl), the user is disabled (disabled_by "ldap") and its
   sessions revoked; a changed mapping updates role/access/group, revokes the
-  sessions and sends the SSH keys back to approval.
+  sessions and sends the SSH keys back to approval. A search that fails
+  stops the whole sync with nothing changed: an unreachable or busy
+  directory never disables anyone.
+- A user disabled by the sync comes back at its next login, when the
+  directory lets it in again; one disabled by an administrator does not.
 """
 import asyncio
 import json
@@ -116,13 +125,33 @@ def _service(settings):
     return _connect(settings, settings.ldap_bind_dn, password)
 
 
-def _lookup(settings, conn, username: str) -> Optional[Tuple[str, dict, List[str]]]:
-    """(dn, attributes, group DNs lower-case) of `username`, or None."""
+def _first(v) -> str:
+    return str((v[0] if isinstance(v, list) and v else v) or "")
+
+
+def _searched(conn, base: str, flt: str, attributes: List[str], size_limit: int = 0) -> List[dict]:
+    """The entries of one search, or LdapError when the search itself failed
+    (a busy or unreachable directory is not an empty answer)."""
     from ldap3 import SUBTREE
+    from ldap3.core.exceptions import LDAPException
+    try:
+        conn.search(base, flt, SUBTREE, attributes=attributes, size_limit=size_limit)
+    except LDAPException as e:
+        raise LdapError(f"ricerca non riuscita: {str(e)[:300]}")
+    res = conn.result or {}
+    # 4 = sizeLimitExceeded: more entries than asked for, an answer all the same
+    if res.get("result") not in (0, 4):
+        raise LdapError(f"ricerca non riuscita: {res.get('description')} {res.get('message', '')}".strip())
+    return [e for e in conn.response or [] if e.get("type") == "searchResEntry"]
+
+
+def _lookup(settings, conn, username: str) -> Optional[Tuple[str, dict, List[str]]]:
+    """(dn, {mail, login, disabled}, group DNs lower-case) of `username`, or
+    None (not found, or not one entry). LdapError when a search fails."""
     from ldap3.utils.conv import escape_filter_chars
     flt = settings.ldap_user_filter.replace("{username}", escape_filter_chars(username))
-    conn.search(settings.ldap_base_dn, flt, SUBTREE, attributes=["mail", "memberOf"], size_limit=2)
-    entries = [e for e in conn.response if e.get("type") == "searchResEntry"]
+    entries = _searched(conn, settings.ldap_base_dn, flt,
+                        ["mail", "memberOf", "sAMAccountName", "uid", "userAccountControl"], size_limit=2)
     if len(entries) != 1:
         return None
     dn = entries[0]["dn"]
@@ -130,12 +159,16 @@ def _lookup(settings, conn, username: str) -> Optional[Tuple[str, dict, List[str
     groups = [str(g).lower() for g in (attrs.get("memberOf") or [])]
     # Directories without memberOf: the groups that list the user
     edn = escape_filter_chars(dn)
-    conn.search(settings.ldap_base_dn, f"(|(&(objectClass=groupOfNames)(member={edn}))"
-                                       f"(&(objectClass=groupOfUniqueNames)(uniqueMember={edn})))",
-                SUBTREE, attributes=[])
-    groups += [e["dn"].lower() for e in conn.response if e.get("type") == "searchResEntry"]
-    mail = attrs.get("mail")
-    return dn, {"mail": (mail[0] if isinstance(mail, list) and mail else mail) or None}, sorted(set(groups))
+    groups += [e["dn"].lower() for e in _searched(
+        conn, settings.ldap_base_dn, f"(|(&(objectClass=groupOfNames)(member={edn}))"
+                                     f"(&(objectClass=groupOfUniqueNames)(uniqueMember={edn})))", [])]
+    try:
+        disabled = bool(int(_first(attrs.get("userAccountControl")) or 0) & UAC_DISABLED)
+    except ValueError:
+        disabled = False
+    return dn, {"mail": _first(attrs.get("mail")) or None,
+                "login": (_first(attrs.get("sAMAccountName")) or _first(attrs.get("uid"))).lower(),
+                "disabled": disabled}, sorted(set(groups))
 
 
 def match(settings, groups: List[str], username: str = "") -> Optional[dict]:
@@ -197,9 +230,7 @@ def search(settings, query: str = "", base: str = "", everything: bool = False) 
         raise LdapError("Scrivere almeno 2 caratteri, oppure elencare tutti")
     limit = LIST_LIMIT if everything else SEARCH_LIMIT
 
-    def first(v):
-        return str((v[0] if isinstance(v, list) and v else v) or "")
-
+    first = _first
     people = ("(&(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
               "(!(objectClass=computer))")
     teams = "(&(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames))"
@@ -248,9 +279,14 @@ def check(settings, username: str, password: str) -> dict:
     if found is None:
         raise LdapError("utente non trovato (o più utenti con lo stesso nome)")
     dn, attrs, groups = found
+    if attrs["disabled"]:
+        raise LdapError("account disabilitato nella directory")
+    # The manager username: the directory's login name, not what was typed
+    login = attrs["login"] or username.strip().lower()
     user_conn = _connect(settings, dn, password)
     user_conn.unbind()
-    return {"dn": dn, "mail": attrs["mail"], "groups": groups, "mapping": match(settings, groups, username)}
+    return {"dn": dn, "mail": attrs["mail"], "login": login, "groups": groups,
+            "mapping": match(settings, groups, login)}
 
 
 async def _apply(session, user, mapping: dict, mail: Optional[str]) -> bool:
@@ -281,7 +317,7 @@ async def login(session, username: str, password: str):
     """The LDAP user (created or updated), or None. Called only for usernames
     that are not local users."""
     from core.auth.models import User
-    from core.auth.service import get_password_hash
+    from core.auth.service import get_password_hash, validate_username
     from core.settings.router import get_system_settings
     from manager.models import InstanceGroup
     settings = await get_system_settings(session)
@@ -292,9 +328,13 @@ async def login(session, username: str, password: str):
     except LdapError as e:
         logger.info("LDAP login of %s refused: %s", username, e)
         return None
+    login = res["login"]
+    if not validate_username(login)[0]:
+        logger.warning("LDAP login of %s refused: directory login name %r not usable as a username", username, login)
+        return None
     mapping = res["mapping"]
     if mapping is None:
-        logger.warning("LDAP login of %s: no rule for the user or its groups (%s)", username, ", ".join(res["groups"])[:300])
+        logger.warning("LDAP login of %s: no rule for the user or its groups (%s)", login, ", ".join(res["groups"])[:300])
         return None
     if mapping["group_id"]:
         group = await session.get(InstanceGroup, mapping["group_id"])
@@ -303,17 +343,22 @@ async def login(session, username: str, password: str):
             logger.error("LDAP rule %s: manager group %s missing or not a %s", mapping["user"] or mapping["group"],
                          mapping["group_id"], expected)
             return None
-    user = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    user = (await session.execute(select(User).where(User.username == login))).scalar_one_or_none()
     if user is None:
-        user = User(username=username, auth_source="ldap", totp_enforced=True,
+        user = User(username=login, auth_source="ldap", totp_enforced=True,
                     hashed_password=await asyncio.to_thread(get_password_hash, secrets.token_urlsafe(32)))
         session.add(user)
         await session.flush()
-        logger.info("LDAP user %s created (%s %s)", username, mapping["role"], mapping["access"])
+        logger.info("LDAP user %s created (%s %s)", login, mapping["role"], mapping["access"])
     elif user.auth_source != "ldap":
+        # A local user with the directory's name: never taken over
         return None
     if not user.is_active:
-        return None
+        if user.disabled_by != "ldap":
+            return None
+        # Disabled by the sync, let in again by the directory
+        user.is_active, user.disabled_by = True, ""
+        logger.info("LDAP user %s enabled again: the directory lets it in", login)
     user.totp_enforced = True
     await _apply(session, user, mapping, res["mail"])
     # Now: the request's own commit runs after the response is sent
@@ -342,18 +387,29 @@ async def sync_once() -> int:
                 return {u.username: _lookup(settings, svc, u.username) for u in users}
             finally:
                 svc.unbind()
+        # All the lookups before any change: one failed search (LdapError)
+        # ends the sync with nothing touched
         found = await asyncio.to_thread(lookups)
         changed = 0
         for u in users:
             entry = found.get(u.username)
-            mapping = match(settings, entry[2], u.username) if entry else None
-            if mapping is None:
-                u.is_active = False
+            reason = None
+            if entry is None:
+                reason = "not in the directory"
+            elif entry[1]["disabled"]:
+                reason = "disabled in the directory"
+            elif entry[1]["login"] and entry[1]["login"] != u.username:
+                # Renamed in the directory: its next login is another user
+                reason = f"login name in the directory is now {entry[1]['login']}"
+            mapping = match(settings, entry[2], u.username) if reason is None else None
+            if reason is None and mapping is None:
+                reason = "no rule for the user or its groups"
+            if reason:
+                u.is_active, u.disabled_by = False, "ldap"
                 auth_service.revoke_sessions(u)
                 session.add(u)
                 changed += 1
-                logger.warning("LDAP user %s disabled: %s", u.username,
-                               "not in the directory" if entry is None else "no rule for the user or its groups")
+                logger.warning("LDAP user %s disabled: %s", u.username, reason)
             elif await _apply(session, u, mapping, entry[1]["mail"]):
                 changed += 1
                 logger.info("LDAP user %s: now %s %s", u.username, mapping["role"], mapping["access"])
