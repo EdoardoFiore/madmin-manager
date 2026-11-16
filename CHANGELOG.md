@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.9.0] - 2026-11-16
+
+### Changed
+- LDAP / Active Directory, "Cerca nella directory": choose the **folder** (a DN under the search base) and search inside it, or list everything in it (up to 2000, in pages). Tick several users (or groups) and give them role, access and manager group in one go; disabled accounts are marked. `POST /api/settings/ldap/search` takes `base`, `query` and `everything`.
+
 ## [1.8.0] - 2026-11-16
 
 ### Added

@@ -49,7 +49,7 @@ The archive holds the database, `DATA_DIR` (CA keys, release files, instance bac
 ### Users
 
 - Superusers only: support, enrollment, releases, updates and OS actions, rollouts of those, settings, logs. Every superuser should have TOTP (support needs it).
-- LDAP/AD (Settings → LDAP / Active Directory): access rules, one per user or per directory group, each with role, access (read-write or read-only) and manager group; nobody without a rule enters. A rule for the user wins over the group rules. "Cerca nella directory" finds users and groups to add. Test with "Prova un login" before enabling. The directory's certificate must match the host name in the URL (use a DNS name, not an IP) and its CA goes in the CA field unless it is a public one. Keep at least one local superuser.
+- LDAP/AD (Settings → LDAP / Active Directory): access rules, one per user or per directory group, each with role, access (read-write or read-only) and manager group; nobody without a rule enters. A rule for the user wins over the group rules. "Cerca nella directory" finds users and groups under a folder (a DN inside the search base) by name, or lists the whole folder; tick the ones to add and give them role, access and manager group. Test with "Prova un login" before enabling. The directory's certificate must match the host name in the URL (use a DNS name, not an IP) and its CA goes in the CA field unless it is a public one. Keep at least one local superuser.
 
 ## 2. Instances
 

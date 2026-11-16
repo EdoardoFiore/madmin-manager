@@ -146,19 +146,22 @@ async def ui_certificate_reset(current_user: User = Depends(require_permission("
 
 
 class LdapSearch(BaseModel):
-    query: str = Field(min_length=2, max_length=100)
+    query: str = Field(default="", max_length=100)
+    base: str = Field(default="", max_length=500)     # DN of the folder to search (default: the search base)
+    everything: bool = False                          # list all users and groups under it
 
 
 @router.post("/ldap/search")
 async def ldap_search(body: LdapSearch, session: AsyncSession = Depends(get_session),
                       current_user: User = Depends(require_permission("manager.manage"))):
-    """Users and groups of the directory to build the access rules from
-    (the saved connection; names only, no passwords)."""
+    """Users and groups under a folder of the directory (never outside the
+    search base), to build the access rules from. The saved connection;
+    names only, no passwords."""
     import asyncio
     from manager.ldapauth import LdapError, search
     row = await get_system_settings(session)
     try:
-        return await asyncio.to_thread(search, row, body.query)
+        return await asyncio.to_thread(search, row, body.query, body.base, body.everything)
     except (LdapError, ValueError) as e:
         raise HTTPException(400, f"LDAP: {e}")
 

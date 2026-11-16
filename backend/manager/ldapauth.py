@@ -36,7 +36,11 @@ from sqlmodel import select
 logger = logging.getLogger("madmin_manager.ldap")
 
 SYNC_INTERVAL = 900
-SEARCH_LIMIT = 10   # users, and groups, per search
+SEARCH_LIMIT = 25    # users, and groups, per search
+LIST_LIMIT = 2000    # "list everything" under a path
+PAGE_SIZE = 500
+PAGED_OID = "1.2.840.113556.1.4.319"
+UAC_DISABLED = 0x2   # userAccountControl: ACCOUNTDISABLE
 ROLES = ("superuser", "partner", "customer")
 
 
@@ -138,46 +142,90 @@ def match(settings, groups: List[str], username: str = "") -> Optional[dict]:
     return None
 
 
-def search(settings, query: str) -> List[dict]:
-    """Blocking: users and groups of the directory matching `query`, for the
-    settings page to pick from: [{kind, label, value, dn, mail}]."""
+def _within(base: str, root: str) -> bool:
+    """Whether the DN `base` is `root` or lies under it."""
+    from ldap3.core.exceptions import LDAPInvalidDnError
+    from ldap3.utils.dn import parse_dn
+    try:
+        b = [(a.lower(), v.lower()) for a, v, _ in parse_dn(base.strip())]
+        r = [(a.lower(), v.lower()) for a, v, _ in parse_dn(root.strip())]
+    except (LDAPInvalidDnError, ValueError):
+        raise LdapError("Percorso non valido: atteso un DN, per esempio ou=Utenti,dc=example,dc=com")
+    return bool(r) and len(b) >= len(r) and b[len(b) - len(r):] == r
+
+
+def _paged(conn, base: str, flt: str, attributes: List[str], limit: int) -> Tuple[List[dict], bool]:
+    """Entries under `base`, a page at a time, up to `limit`. (entries, truncated)."""
     from ldap3 import SUBTREE
+    entries, cookie = [], None
+    while True:
+        conn.search(base, flt, SUBTREE, attributes=attributes, paged_size=min(PAGE_SIZE, limit), paged_cookie=cookie)
+        res = conn.result or {}
+        if res.get("result") == 32:
+            raise LdapError("Percorso non trovato nella directory")
+        if res.get("result") not in (0, 4):
+            raise LdapError(f"ricerca non riuscita: {res.get('description')} {res.get('message', '')}".strip())
+        entries += [e for e in conn.response or [] if e.get("type") == "searchResEntry"]
+        if len(entries) >= limit:
+            return entries[:limit], True
+        cookie = (res.get("controls") or {}).get(PAGED_OID, {}).get("value", {}).get("cookie")
+        if not cookie:
+            return entries, False
+
+
+def search(settings, query: str = "", base: str = "", everything: bool = False) -> dict:
+    """Blocking: the users and groups of the directory under `base` (default:
+    the search base; never outside it) that match `query`, or all of them with
+    `everything`, for the settings page to pick from:
+    {users: [{kind, label, value, dn, mail, disabled}], groups: [...], truncated, limit, base}."""
     from ldap3.utils.conv import escape_filter_chars
     if not settings.ldap_url or not settings.ldap_base_dn:
         raise LdapError("Server e base di ricerca non configurati")
+    base = base.strip() or settings.ldap_base_dn
+    if not _within(base, settings.ldap_base_dn):
+        raise LdapError(f"Il percorso deve essere dentro la base di ricerca ({settings.ldap_base_dn})")
     q = escape_filter_chars(query.strip())
-    if len(q) < 2:
-        raise LdapError("Almeno 2 caratteri")
+    if not everything and len(q) < 2:
+        raise LdapError("Scrivere almeno 2 caratteri, oppure elencare tutti")
+    limit = LIST_LIMIT if everything else SEARCH_LIMIT
 
     def first(v):
         return str((v[0] if isinstance(v, list) and v else v) or "")
 
+    people = ("(&(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+              "(!(objectClass=computer))")
+    teams = "(&(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames))"
+    if q:
+        people += (f"(|(cn=*{q}*)(sAMAccountName=*{q}*)(uid=*{q}*)(mail=*{q}*)(displayName=*{q}*)"
+                   f"(userPrincipalName=*{q}*))")
+        teams += f"(cn=*{q}*)"
     svc = _service(settings)
     try:
-        out = []
-        svc.search(settings.ldap_base_dn,
-                   "(&(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
-                   f"(|(cn=*{q}*)(sAMAccountName=*{q}*)(uid=*{q}*)(mail=*{q}*)(displayName=*{q}*)))",
-                   SUBTREE, attributes=["sAMAccountName", "uid", "cn", "displayName", "mail"], size_limit=SEARCH_LIMIT)
-        for e in svc.response:
-            if e.get("type") != "searchResEntry":
-                continue
-            a = e.get("attributes") or {}
-            login = first(a.get("sAMAccountName")) or first(a.get("uid"))
-            if login:
-                out.append({"kind": "user", "label": first(a.get("displayName")) or first(a.get("cn")) or login,
-                            "value": login, "dn": e["dn"], "mail": first(a.get("mail")) or None})
-        svc.search(settings.ldap_base_dn,
-                   f"(&(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames))(cn=*{q}*))",
-                   SUBTREE, attributes=["cn", "description"], size_limit=SEARCH_LIMIT)
-        for e in svc.response:
-            if e.get("type") == "searchResEntry":
-                a = e.get("attributes") or {}
-                out.append({"kind": "group", "label": first(a.get("cn")) or e["dn"], "value": e["dn"],
-                            "dn": e["dn"], "mail": None})
-        return out
+        user_entries, cut_users = _paged(
+            svc, base, people + ")",
+            ["sAMAccountName", "uid", "cn", "displayName", "mail", "userPrincipalName", "userAccountControl"], limit)
+        group_entries, cut_groups = _paged(svc, base, teams + ")", ["cn"], limit)
     finally:
         svc.unbind()
+    users = []
+    for e in user_entries:
+        a = e.get("attributes") or {}
+        login = first(a.get("sAMAccountName")) or first(a.get("uid"))
+        if not login:
+            continue
+        try:
+            disabled = bool(int(first(a.get("userAccountControl")) or 0) & UAC_DISABLED)
+        except ValueError:
+            disabled = False
+        users.append({"kind": "user", "label": first(a.get("displayName")) or first(a.get("cn")) or login,
+                      "value": login, "dn": e["dn"],
+                      "mail": first(a.get("mail")) or first(a.get("userPrincipalName")) or None,
+                      "disabled": disabled})
+    groups = [{"kind": "group", "label": first((e.get("attributes") or {}).get("cn")) or e["dn"],
+               "value": e["dn"], "dn": e["dn"], "mail": None, "disabled": False} for e in group_entries]
+    key = lambda r: r["label"].lower()  # noqa: E731
+    return {"users": sorted(users, key=key), "groups": sorted(groups, key=key),
+            "truncated": cut_users or cut_groups, "limit": limit, "base": base}
 
 
 def check(settings, username: str, password: str) -> dict:

@@ -8,7 +8,7 @@
 import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { escapeHtml, showToast } from '../utils.js';
 import { checkPermission } from '../app.js';
-import { formModal, formData, field, notice, confirmAction, fmtDate, otpField, validateForm } from './manager-common.js';
+import { formModal, formData, field, notice, confirmAction, fmtDate, otpField, validateForm, formSection } from './manager-common.js';
 
 const TIMEZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
 
@@ -178,7 +178,7 @@ const serializeRules = (rules) => JSON.stringify(rules.map((r) => ({
     ...(r.role === 'superuser' ? {} : { group_id: r.group_id }),
 })));
 
-function rulesEditor(form, groups, ro) {
+function rulesEditor(form, groups, ro, getBase) {
     const box = form.querySelector('#ldap-rules');
     const hidden = form.elements.ldap_mappings;
     let rules = [];
@@ -244,11 +244,15 @@ function rulesEditor(form, groups, ro) {
         if (act === 'add') rules.push({ type: 'user', name: '', role: 'customer', access: 'ro', group_id: '' });
         else if (act === 'del') rules.splice(i, 1);
         else if (act === 'up') rules.splice(i - 1, 2, rules[i], rules[i - 1]);
-        else if (act === 'search') return directorySearch((found) => {
-            if (rules.some((r) => r.type === found.kind && r.name.toLowerCase() === found.value.toLowerCase())) return false;
-            rules.push({ type: found.kind, name: found.value, role: 'customer', access: 'ro', group_id: '' });
+        else if (act === 'search') return directorySearch(groups, getBase(), (items, grant) => {
+            let added = 0;
+            for (const it of items) {
+                if (rules.some((r) => r.type === it.kind && r.name.toLowerCase() === it.value.toLowerCase())) continue;
+                rules.push({ type: it.kind, name: it.value, ...grant });
+                added++;
+            }
             draw(); changed();
-            return true;
+            return { added, skipped: items.length - added };
         });
         draw(); changed();
     });
@@ -256,33 +260,112 @@ function rulesEditor(form, groups, ro) {
     return { set(raw) { rules = parseRules(raw); draw(); } };
 }
 
-/** Users and groups of the directory, found with the saved connection. */
-function directorySearch(onPick) {
+/**
+ * Users and groups under a folder of the directory (the saved connection):
+ * the folder, a search in it or the whole list, then tick who to add. The
+ * same role, access and manager group go to everyone ticked.
+ */
+function directorySearch(groups, base, onAdd) {
     const el = formModal('Cerca nella directory', `
-        ${notice('info', '', [['ti-info-circle', 'Cerca con la connessione <b>salvata</b>. Chi aggiungi parte come Cliente in sola lettura: ruolo, accesso e gruppo si scelgono nella regola.']])}
-        ${field('query', 'Nome, utente o e-mail', { required: true, minlength: 2, maxlength: 100, attrs: 'autocomplete="off"', example: 'rossi' })}
-        <div id="ldap-found"></div>`,
-    async (form) => {
-        const box = el.querySelector('#ldap-found');
-        const found = await apiPost('/settings/ldap/search', { query: formData(form).query });
-        box.innerHTML = found.length ? `<div class="list-group">${found.map((r, i) => `
-            <div class="list-group-item d-flex align-items-center gap-2">
-                <i class="ti ${r.kind === 'user' ? 'ti-user' : 'ti-users-group'} text-muted"></i>
-                <div class="flex-fill text-truncate">
-                    <div class="text-truncate">${escapeHtml(r.label)} <span class="badge bg-secondary-lt ms-1">${r.kind === 'user' ? 'Utente' : 'Gruppo'}</span></div>
-                    <div class="small text-muted font-monospace text-truncate">${escapeHtml(r.kind === 'user' ? r.value : r.dn)}${r.mail ? ` · ${escapeHtml(r.mail)}` : ''}</div>
-                </div>
-                <button type="button" class="btn btn-sm btn-outline-primary" data-pick="${i}">Aggiungi</button>
-            </div>`).join('')}</div>
-            <div class="form-hint">Al massimo 10 utenti e 10 gruppi: restringere la ricerca se manca qualcuno.</div>`
-            : '<div class="text-muted">Nessun utente o gruppo trovato.</div>';
-        box.querySelectorAll('[data-pick]').forEach((btn) => btn.addEventListener('click', () => {
-            const added = onPick(found[Number(btn.dataset.pick)]);
-            btn.disabled = true;
-            btn.textContent = added ? 'Aggiunto' : 'Già presente';
-        }));
-        return false;
-    }, { submitText: 'Cerca', icon: 'ti-search', size: 'lg' });
+        ${notice('info', '', [['ti-info-circle', 'Cerca con la connessione <b>salvata</b>, nel percorso indicato e nelle sue sottocartelle.']])}
+        ${field('base', 'Percorso', { required: true, mono: true, value: base, maxlength: 500, example: 'ou=Utenti,dc=example,dc=com',
+            hint: 'La cartella (OU) della directory dove cercare: deve stare dentro la base di ricerca.' })}
+        ${field('query', 'Nome, utente o e-mail', { maxlength: 100, attrs: 'autocomplete="off"', example: 'rossi' })}
+        <div class="btn-list mb-3"><button type="submit" class="btn btn-primary btn-sm" data-search><i class="ti ti-search me-1"></i>Cerca</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-all><i class="ti ti-list me-1"></i>Elenca tutti</button></div>
+        <div id="dir-found"></div>`,
+    async (form) => { await run(form, false); return false; },
+    { submitText: 'Cerca', icon: 'ti-search', size: 'lg' });
+    // The footer button is the same as the one in the form: keep a single one
+    el.querySelector('.modal-footer [type=submit]').classList.add('d-none');
+    const form = el.querySelector('form');
+    const box = el.querySelector('#dir-found');
+    const errorBox = form.querySelector('[data-form-error]');
+
+    const showError = (msg) => { errorBox.textContent = msg; errorBox.classList.remove('d-none'); };
+    async function run(f, everything) {
+        errorBox.classList.add('d-none');
+        const d = formData(f);
+        if (!d.base) throw new Error('Indicare il percorso');
+        if (!everything && (d.query || '').length < 2) throw new Error('Scrivere almeno 2 caratteri, oppure usare "Elenca tutti"');
+        box.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Ricerca in corso…</div>';
+        let r;
+        try { r = await apiPost('/settings/ldap/search', { base: d.base, query: d.query || '', everything }); }
+        catch (err) { box.innerHTML = ''; throw err; }
+        show(r);
+    }
+    form.querySelector('[data-all]').addEventListener('click', async () => {
+        try { await run(form, true); } catch (err) { showError(err.message || 'Errore'); }
+    });
+
+    function show(r) {
+        const row = (it, i) => `<label class="list-group-item d-flex align-items-center gap-2">
+            <input type="checkbox" class="form-check-input m-0" data-pick="${it.kind}:${i}">
+            <i class="ti ${it.kind === 'user' ? 'ti-user' : 'ti-users-group'} text-muted"></i>
+            <div class="flex-fill text-truncate">
+                <div class="text-truncate">${escapeHtml(it.label)}${it.disabled ? ' <span class="badge bg-warning-lt ms-1">Disattivato nella directory</span>' : ''}</div>
+                <div class="small text-muted font-monospace text-truncate">${escapeHtml(it.kind === 'user' ? it.value : it.dn)}${it.mail ? ` · ${escapeHtml(it.mail)}` : ''}</div>
+            </div></label>`;
+        const list = (title, items, kind) => items.length ? `
+            <div class="d-flex align-items-center mt-3 mb-1"><h4 class="mb-0">${title} <span class="text-muted fw-normal">(${items.length})</span></h4>
+                <label class="form-check ms-auto mb-0 small"><input type="checkbox" class="form-check-input" data-all-of="${kind}"><span class="form-check-label">Seleziona tutti</span></label></div>
+            <div class="list-group list-group-flush border rounded" style="max-height: 14rem; overflow-y: auto">${items.map((it, i) => row(it, i)).join('')}</div>` : '';
+        const found = { user: r.users, group: r.groups };
+        box.innerHTML = (r.users.length || r.groups.length) ? `
+            ${r.truncated ? `<div class="alert alert-warning py-2 mt-3 mb-0 small">Mostrati i primi ${r.limit}: restringere il percorso o la ricerca.</div>` : ''}
+            ${list('Utenti', r.users, 'user')}${list('Gruppi', r.groups, 'group')}
+            ${formSection('Accesso da dare a chi selezioni')}
+            <div class="row g-2">
+                ${field('grant_role', 'Ruolo', { type: 'select', col: 'col-md-4', value: 'customer', options: ROLES })}
+                ${field('grant_access', 'Accesso', { type: 'select', col: 'col-md-4', value: 'ro', options: ACCESS })}
+                ${field('grant_group', 'Vede (gruppo del manager)', { type: 'select', col: 'col-md-4', id: 'dir-grant-group' })}
+            </div>
+            <button type="button" class="btn btn-primary" data-add disabled><i class="ti ti-plus me-1"></i>Aggiungi selezionati</button>
+            <span class="small text-muted ms-2" data-add-note></span>`
+            : '<div class="text-muted mt-3">Nessun utente o gruppo trovato in questo percorso.</div>';
+        if (!box.querySelector('[data-add]')) return;
+
+        const roleSel = box.querySelector('[name=grant_role]');
+        const groupSel = box.querySelector('#dir-grant-group');
+        const addBtn = box.querySelector('[data-add]');
+        const picked = () => [...box.querySelectorAll('[data-pick]:checked:not(:disabled)')].map((c) => {
+            const [kind, i] = c.dataset.pick.split(':');
+            return { el: c, item: found[kind][Number(i)] };
+        });
+        const syncRole = () => {
+            const wrap = groupSel.closest('.mb-3, [class*="col"]');
+            const own = groups.filter((g) => g.kind === (roleSel.value === 'partner' ? 'partner' : 'customer'));
+            groupSel.innerHTML = `<option value="">${own.length ? 'Scegli il gruppo…' : 'Nessun gruppo disponibile'}</option>`
+                + own.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.path || g.name)}</option>`).join('');
+            wrap.hidden = groupSel.disabled = roleSel.value === 'superuser';
+        };
+        const syncAdd = () => {
+            const n = picked().length;
+            addBtn.disabled = n === 0;
+            addBtn.innerHTML = `<i class="ti ti-plus me-1"></i>Aggiungi selezionati${n ? ` (${n})` : ''}`;
+        };
+        roleSel.addEventListener('change', syncRole);
+        box.addEventListener('change', (e) => {
+            const all = e.target.dataset?.allOf;
+            if (all) box.querySelectorAll(`[data-pick^="${all}:"]:not(:disabled)`).forEach((c) => { c.checked = e.target.checked; });
+            syncAdd();
+        });
+        syncRole();
+        syncAdd();
+        addBtn.addEventListener('click', () => {
+            errorBox.classList.add('d-none');
+            const grant = { role: roleSel.value, access: box.querySelector('[name=grant_access]').value,
+                            group_id: roleSel.value === 'superuser' ? '' : groupSel.value };
+            if (grant.role !== 'superuser' && !grant.group_id) { groupSel.classList.add('is-invalid'); return showError('Scegliere il gruppo del manager che vedranno'); }
+            groupSel.classList.remove('is-invalid');
+            const chosen = picked();
+            const { added, skipped } = onAdd(chosen.map((c) => c.item), grant);
+            chosen.forEach(({ el: c }) => { c.checked = false; c.disabled = true; });
+            syncAdd();
+            box.querySelector('[data-add-note]').textContent =
+                `${added} aggiunt${added === 1 ? 'a' : 'e'}${skipped ? `, ${skipped} già present${skipped === 1 ? 'e' : 'i'}` : ''}: salvare la sezione per applicare.`;
+        });
+    }
 }
 
 function ldapTest() {
@@ -422,7 +505,7 @@ export async function render(container) {
 
     const panel = (id) => container.querySelector(`[data-panel="${id}"]`);
     const forms = SECTIONS.filter((x) => !x.custom).map((x) => ({ sec: x, form: panel(x.id), initial: {} }));
-    const rules = rulesEditor(panel('ldap'), groups, ro);
+    const rules = rulesEditor(panel('ldap'), groups, ro, () => state.ldap_base_dn || '');
 
     // --- values: from the server state into the inputs, and what changed since
     function write(entry, keys = null) {
