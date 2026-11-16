@@ -328,13 +328,13 @@ async def login(session, username: str, password: str):
     except LdapError as e:
         logger.info("LDAP login of %s refused: %s", username, e)
         return None
-    login = res["login"]
-    if not validate_username(login)[0]:
-        logger.warning("LDAP login of %s refused: directory login name %r not usable as a username", username, login)
+    name = res["login"]
+    if not validate_username(name)[0]:
+        logger.warning("LDAP login of %s refused: directory login name %r not usable as a username", username, name)
         return None
     mapping = res["mapping"]
     if mapping is None:
-        logger.warning("LDAP login of %s: no rule for the user or its groups (%s)", login, ", ".join(res["groups"])[:300])
+        logger.warning("LDAP login of %s: no rule for the user or its groups (%s)", name, ", ".join(res["groups"])[:300])
         return None
     if mapping["group_id"]:
         group = await session.get(InstanceGroup, mapping["group_id"])
@@ -343,13 +343,13 @@ async def login(session, username: str, password: str):
             logger.error("LDAP rule %s: manager group %s missing or not a %s", mapping["user"] or mapping["group"],
                          mapping["group_id"], expected)
             return None
-    user = (await session.execute(select(User).where(User.username == login))).scalar_one_or_none()
+    user = (await session.execute(select(User).where(User.username == name))).scalar_one_or_none()
     if user is None:
-        user = User(username=login, auth_source="ldap", totp_enforced=True,
+        user = User(username=name, auth_source="ldap", totp_enforced=True,
                     hashed_password=await asyncio.to_thread(get_password_hash, secrets.token_urlsafe(32)))
         session.add(user)
         await session.flush()
-        logger.info("LDAP user %s created (%s %s)", login, mapping["role"], mapping["access"])
+        logger.info("LDAP user %s created (%s %s)", name, mapping["role"], mapping["access"])
     elif user.auth_source != "ldap":
         # A local user with the directory's name: never taken over
         return None
@@ -358,7 +358,7 @@ async def login(session, username: str, password: str):
             return None
         # Disabled by the sync, let in again by the directory
         user.is_active, user.disabled_by = True, ""
-        logger.info("LDAP user %s enabled again: the directory lets it in", login)
+        logger.info("LDAP user %s enabled again: the directory lets it in", name)
     user.totp_enforced = True
     await _apply(session, user, mapping, res["mail"])
     # Now: the request's own commit runs after the response is sent
