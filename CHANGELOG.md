@@ -8,6 +8,16 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.12.0] - 2026-11-17
+
+### Fixed
+- LDAP: an account disabled in Active Directory (`userAccountControl`) stayed active in the manager with its open sessions (only a removal from the directory or from the mapped groups counted): the sync disables it and ends its sessions, and the login refuses it.
+- LDAP: a search that failed (directory busy, timeout, wrong base) read as "user not in the directory", and the sync disabled the users; a failed search now stops the sync with nothing changed. A user disabled by the sync (`disabled_by` = `ldap`, shown as "Disabilitato dalla directory") comes back at its next login when the directory lets it in again; one disabled by an administrator does not.
+- LDAP: the manager username was what was typed at login, so `MRossi` and `mrossi` became two users (two 2FA setups), and a name with characters not allowed in usernames was stored as is. It is now the directory's login name (`sAMAccountName`, else `uid`) in lower case, checked like any username; a user renamed in the directory is disabled (the next login creates the new name). "Prova un login" shows the resulting name.
+
+### Schema
+- Step 0010: `user.disabled_by`; existing LDAP usernames lowered. Where two LDAP users differ only by case, the ones not in lower case are disabled (data kept, sessions revoked).
+
 ## [1.11.1] - 2026-11-17
 
 ### Fixed
