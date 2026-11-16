@@ -180,7 +180,7 @@ const serializeRules = (rules) => JSON.stringify(rules.map((r) => ({
     ...(r.role === 'superuser' ? {} : { group_id: r.group_id }),
 })));
 
-function rulesEditor(form, groups, ro, getBase) {
+function rulesEditor(form, groups, ro, getBase, persist) {
     const box = form.querySelector('#ldap-rules');
     const hidden = form.elements.ldap_mappings;
     let rules = [];
@@ -246,7 +246,7 @@ function rulesEditor(form, groups, ro, getBase) {
         if (act === 'add') rules.push({ type: 'user', name: '', role: 'customer', access: 'ro', group_id: '' });
         else if (act === 'del') rules.splice(i, 1);
         else if (act === 'up') rules.splice(i - 1, 2, rules[i], rules[i - 1]);
-        else if (act === 'search') return directorySearch(groups, getBase(), (items, grant) => {
+        else if (act === 'search') return directorySearch(groups, getBase(), async (items, grant) => {
             let added = 0;
             for (const it of items) {
                 if (rules.some((r) => r.type === it.kind && r.name.toLowerCase() === it.value.toLowerCase())) continue;
@@ -254,6 +254,16 @@ function rulesEditor(form, groups, ro, getBase) {
                 added++;
             }
             draw(); changed();
+            // Saved at once (the rest of the section stays as it is): picking someone
+            // from the directory is the whole action, as in the users page of Horatio
+            if (added) {
+                try { await persist(serializeRules(rules)); }
+                catch (err) {
+                    rules.splice(rules.length - added, added);
+                    draw(); changed();
+                    throw err;
+                }
+            }
             return { added, skipped: items.length - added };
         });
         draw(); changed();
@@ -354,18 +364,22 @@ function directorySearch(groups, base, onAdd) {
         });
         syncRole();
         syncAdd();
-        addBtn.addEventListener('click', () => {
+        addBtn.addEventListener('click', async () => {
             errorBox.classList.add('d-none');
             const grant = { role: roleSel.value, access: box.querySelector('[name=grant_access]').value,
                             group_id: roleSel.value === 'superuser' ? '' : groupSel.value };
             if (grant.role !== 'superuser' && !grant.group_id) { groupSel.classList.add('is-invalid'); return showError('Scegliere il gruppo del manager che vedranno'); }
             groupSel.classList.remove('is-invalid');
             const chosen = picked();
-            const { added, skipped } = onAdd(chosen.map((c) => c.item), grant);
+            addBtn.disabled = true;
+            let result;
+            try { result = await onAdd(chosen.map((c) => c.item), grant); }
+            catch (err) { syncAdd(); return showError(`Non salvato: ${err.message || 'errore'}`); }
+            const { added, skipped } = result;
             chosen.forEach(({ el: c }) => { c.checked = false; c.disabled = true; });
             syncAdd();
             box.querySelector('[data-add-note]').textContent =
-                `${added} aggiunt${added === 1 ? 'a' : 'e'}${skipped ? `, ${skipped} già present${skipped === 1 ? 'e' : 'i'}` : ''}: salvare la sezione per applicare.`;
+                `${added} aggiunt${added === 1 ? 'a' : 'e'} e salvat${added === 1 ? 'a' : 'e'}${skipped ? `, ${skipped} già present${skipped === 1 ? 'e' : 'i'}` : ''}.`;
         });
     }
 }
@@ -507,7 +521,13 @@ export async function render(container) {
 
     const panel = (id) => container.querySelector(`[data-panel="${id}"]`);
     const forms = SECTIONS.filter((x) => !x.custom).map((x) => ({ sec: x, form: panel(x.id), initial: {} }));
-    const rules = rulesEditor(panel('ldap'), groups, ro, () => state.ldap_base_dn || '');
+    const ldapEntry = forms.find((x) => x.sec.id === 'ldap');
+    const rules = rulesEditor(panel('ldap'), groups, ro, () => state.ldap_base_dn || '', async (raw) => {
+        state = await apiPatch('/settings/system', { ldap_mappings: raw });
+        // What was saved is the new starting point: the rest of the section keeps its own changes
+        ldapEntry.initial.ldap_mappings = ldapEntry.form.elements.ldap_mappings.value;
+        refresh(ldapEntry);
+    });
 
     // --- values: from the server state into the inputs, and what changed since
     function write(entry, keys = null) {

@@ -7,7 +7,7 @@ from typing import List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
-MANAGER_VERSION = "1.11.0"
+MANAGER_VERSION = "1.11.1"
 
 
 class Settings(BaseSettings):

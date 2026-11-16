@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.11.1] - 2026-11-17
+
+### Fixed
+- LDAP / Active Directory: users and groups added with "Cerca nella directory" were only in the table until "Salva" was pressed, and were lost on reload. They are now saved as soon as they are added (the other fields of the section keep their own unsaved changes); if the saving fails, they are taken out again and the error is shown.
+
 ## [1.11.0] - 2026-11-17
 
 ### Added
