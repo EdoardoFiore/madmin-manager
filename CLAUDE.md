@@ -33,6 +33,8 @@ backend/
     models.py        every table (Instance, InstanceAddress, AgentCertificate, EnrollmentToken,
                      Command, Backup, License, SupportSession, InstanceGroup)
     pki.py           agent CA, endpoint certificate, SSH CA, license key; CLI python -m manager.pki
+    uicert.py        certificate of the UI port (DATA_DIR/ui-tls, own or links to the endpoint's);
+                     nginx reload through madmin-manager-nginx-reload.path; CLI python -m manager.uicert
     agents/          protocol.py (IDENTICAL to madmin/backend/core/manager/protocol.py),
                      auth (client cert), registry (live connections), dispatcher (commands), router (/agent/*)
     groups.py        hierarchy (manager) -> customer | (manager) -> partner -> customer, subtree_ids
@@ -64,6 +66,7 @@ scripts/manager-restore.sh      restore onto a freshly installed manager
 - **One protocol file**, copied identically, with capability negotiation: the UI/API refuses (409) commands the connected agent does not advertise.
 - Single uvicorn worker (registry, waiters, support listeners in process). Service runs as user `madmin-manager` with `ProtectSystem=strict`.
 - nginx: the UI server returns 404 for `/agent/` and blanks `X-SSL-Client-*`; the agent server serves only `/agent/`.
+- **Two server certificates**: the agent server always uses the one of the manager CA (`pki/server.pem`); an operator's certificate goes only on the UI server (`ui-tls/`). The service never gets the right to run nginx or systemctl: it writes `ui-tls/reload` and a root path unit reloads.
 
 ## Enrollment paths
 
@@ -83,7 +86,7 @@ Users have a `role` (superuser | partner | customer), an `access` (rw | ro) and,
 
 ## Data
 
-`DATA_DIR/pki/` (CA and endpoint keys; private keys other than the endpoint's encrypted with the data key), `DATA_DIR/backups/<instance_id>/<backup_id>.bin` (archives encrypted by the instance with its passphrase, `Instance.backup_passphrase_enc`). Rotating `SECRET_KEY` makes the PKI and the passphrases unreadable.
+`DATA_DIR/pki/` (CA and endpoint keys; private keys other than the endpoint's encrypted with the data key), `DATA_DIR/ui-tls/` (UI certificate and key, in clear: nginx reads them), `DATA_DIR/backups/<instance_id>/<backup_id>.bin` (archives encrypted by the instance with its passphrase, `Instance.backup_passphrase_enc`). Rotating `SECRET_KEY` makes the PKI and the passphrases unreadable.
 
 ## Not done yet
 

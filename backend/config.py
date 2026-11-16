@@ -7,7 +7,7 @@ from typing import List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
-MANAGER_VERSION = "1.5.0"
+MANAGER_VERSION = "1.6.0"
 
 
 class Settings(BaseSettings):
@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     allowed_origins: str = Field(default="*")
 
     data_dir: str = Field(default="/opt/madmin-manager/data")
+
+    # Port nginx serves the UI on (setup-manager.sh --ui-port): read back after
+    # a UI certificate change to see that nginx took it (manager.uicert)
+    ui_port: int = Field(default=443)
 
     # Addresses the support listeners bind to (one port per open session)
     support_bind: str = Field(default="0.0.0.0")

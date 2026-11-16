@@ -11,7 +11,9 @@ if [ "$YES" != "true" ]; then
     [[ "$ans" =~ ^[yY]$ ]] || exit 0
 fi
 systemctl disable --now madmin-manager.service 2>/dev/null || true
-rm -f /etc/systemd/system/madmin-manager.service
+systemctl disable --now madmin-manager-nginx-reload.path 2>/dev/null || true
+rm -f /etc/systemd/system/madmin-manager.service /etc/systemd/system/madmin-manager-nginx-reload.path \
+      /etc/systemd/system/madmin-manager-nginx-reload.service
 systemctl daemon-reload
 rm -f /etc/nginx/sites-enabled/madmin-manager.conf /etc/nginx/sites-available/madmin-manager.conf \
       /etc/nginx/snippets/madmin-manager-headers.conf /etc/nginx/snippets/madmin-manager-proxy.conf \

@@ -109,7 +109,11 @@ sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" "$ENV_FILE"
 
 cd "$INSTALL_DIR/backend"
 sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m manager.pki trust-bundle
+# An archive older than 1.6.0 has no ui-tls/, which nginx reads the UI certificate from
+sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m manager.uicert ensure
 cd - >/dev/null
+# DATA_DIR was replaced: watch the new directory
+systemctl try-restart madmin-manager-nginx-reload.path 2>/dev/null || true
 nginx -t && systemctl reload nginx
 systemctl start madmin-manager.service
 

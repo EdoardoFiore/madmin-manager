@@ -3,7 +3,7 @@ Manager settings API.
 """
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -90,6 +90,53 @@ async def smtp_test(session: AsyncSession = Depends(get_session),
     if errors:
         raise HTTPException(502, "; ".join(errors)[:500])
     return {"sent_to": to}
+
+
+class UICertificateUpload(BaseModel):
+    cert_pem: str = Field(min_length=1, max_length=40000)   # may hold the chain too
+    key_pem: str = Field(min_length=1, max_length=20000)
+    chain_pem: str = Field(default="", max_length=60000)
+    # Host the operator is using the UI with: a certificate not valid for it
+    # is refused unless forced
+    host: str = Field(default="", max_length=255)
+    force: bool = False
+    totp: str = Field(default="", max_length=16)
+
+
+@router.get("/ui-certificate")
+async def ui_certificate(current_user: User = Depends(require_permission("manager.view"))):
+    """The certificate nginx serves on the UI port (never the agent endpoint's)."""
+    from manager import uicert
+    return uicert.info()
+
+
+@router.post("/ui-certificate")
+async def ui_certificate_install(body: UICertificateUpload, request: Request,
+                                 session: AsyncSession = Depends(get_session),
+                                 current_user: User = Depends(require_permission("manager.manage"))):
+    """Whoever holds the key of the installed certificate can pass for the UI
+    to the operators: a fresh 2FA code, asked once the files are known good
+    (a code is accepted once)."""
+    from core.auth.router import require_step_up
+    from manager import uicert
+    try:
+        state = uicert.prepare(body.cert_pem, body.key_pem, body.chain_pem, body.host, body.force)
+        await require_step_up(session, current_user, body.totp, request)
+        return await uicert.apply(state)
+    except uicert.UICertReloadError as e:
+        raise HTTPException(503, str(e))
+    except uicert.UICertError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/ui-certificate")
+async def ui_certificate_reset(current_user: User = Depends(require_permission("manager.manage"))):
+    """Back to the internal certificate (issued by the agent CA)."""
+    from manager import uicert
+    try:
+        return await uicert.reset()
+    except uicert.UICertError as e:
+        raise HTTPException(503, str(e))
 
 
 class LdapTest(BaseModel):

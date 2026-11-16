@@ -1,10 +1,10 @@
 /**
  * MADMIN Manager - Settings.
  */
-import { apiGet, apiPatch, apiPost } from '../api.js';
+import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { escapeHtml, showToast } from '../utils.js';
 import { checkPermission } from '../app.js';
-import { formModal, formData, field, notice } from './manager-common.js';
+import { formModal, formData, field, notice, confirmAction, fmtDate, otpField } from './manager-common.js';
 
 const FIELDS = [
     ['Generale', [
@@ -64,9 +64,77 @@ const FIELDS = [
     ]],
 ];
 
+// The certificate of the UI port only: the instances' port (8443) always uses
+// the one issued by the manager CA.
+function uiCertCard(c, ro) {
+    if (!c) return '';
+    const days = c.days_left;
+    const tone = days == null ? 'secondary' : days < 15 ? 'danger' : days < 30 ? 'warning' : 'success';
+    const details = c.not_after ? `
+        <div class="mb-2"><div class="small text-muted">Valido per</div>
+            <div class="font-monospace small text-break">${(c.names || []).map(escapeHtml).join(', ') || '-'}</div></div>
+        <div class="mb-2"><div class="small text-muted">Emesso da</div><div class="small text-break">${escapeHtml(c.issuer || '-')}</div></div>
+        <div class="mb-3"><div class="small text-muted">Scadenza</div>
+            <div class="small">${fmtDate(c.not_after)} <span class="badge bg-${tone}-lt ms-1">${days < 0 ? 'scaduto' : `${days} giorni`}</span></div></div>` : '';
+    return `<div class="col-lg-6 col-xl-3"><div class="card"><div class="card-header"><h3 class="card-title">Certificato della UI</h3></div>
+        <div class="card-body">
+            <div class="mb-3">${c.custom
+                ? '<span class="badge bg-success-lt">Proprio</span>'
+                : '<span class="badge bg-secondary-lt">Interno (CA del manager)</span>'}
+                <div class="form-hint">${c.custom
+                    ? 'Non si rinnova da solo: caricare il nuovo prima della scadenza.'
+                    : 'I browser non conoscono la CA del manager e mostrano un avviso: caricare un certificato proprio per toglierlo.'}
+                    Riguarda solo la UI, non la porta delle istanze.</div></div>
+            ${details}
+            ${c.installed ? '' : notice('warning', '', ['Non gestito da questa installazione: rieseguire <code>setup-manager.sh</code> di questa versione.'])}
+            ${ro || !c.installed ? '' : `<div class="btn-list">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="ui-cert-upload"><i class="ti ti-upload me-1"></i>Carica certificato</button>
+                ${c.custom ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="ui-cert-reset">Torna a quello interno</button>' : ''}
+            </div>`}
+        </div></div></div>`;
+}
+
+function uiCertUpload(container) {
+    const host = location.hostname;
+    formModal('Certificato della UI', `
+        ${notice('info', '', [
+            ['ti-world', 'Vale solo per la UI. La porta delle istanze resta sul certificato della CA del manager.'],
+            ['ti-refresh', 'nginx viene ricaricato: se non presenta il nuovo certificato, torna il precedente.'],
+        ])}
+        ${field('cert', 'Certificato', { type: 'file', required: true, attrs: 'accept=".crt,.pem,.cer"', hint: 'PEM (.crt, .pem). Può contenere anche la catena.' })}
+        ${field('key', 'Chiave privata', { type: 'file', required: true, attrs: 'accept=".key,.pem"', hint: 'PEM, RSA o ECDSA, senza password.' })}
+        ${field('chain', 'CA bundle', { type: 'file', attrs: 'accept=".ca-bundle,.crt,.pem,.cer"', hint: 'I certificati intermedi dell\'emittente, se non sono già nel file del certificato.' })}
+        ${field('force', `Installa anche se non vale per <span class="font-monospace">${escapeHtml(host)}</span>`, { type: 'checkbox', hint: 'Il nome con cui stai usando la UI ora. Con un certificato per un altro nome il browser mostrerà un avviso su questo.' })}
+        ${otpField()}`,
+    async (form) => {
+        const text = async (name) => (await form.elements[name].files[0]?.text()) || '';
+        await apiPost('/settings/ui-certificate', {
+            cert_pem: await text('cert'), key_pem: await text('key'), chain_pem: await text('chain'),
+            host, force: form.elements.force.checked, totp: form.elements.totp.value.trim(),
+        });
+        showToast('Certificato della UI installato', 'success', 6000);
+        render(container);
+    }, { submitText: 'Installa', icon: 'ti-certificate' });
+}
+
+async function uiCertReset(container) {
+    const ok = await confirmAction({
+        title: 'Tornare al certificato interno?', tone: 'warning', confirmText: 'Ripristina', icon: 'ti-certificate',
+        items: ['Il certificato caricato e la sua chiave vengono eliminati dal manager.',
+                'La UI torna al certificato emesso dalla CA del manager: i browser mostreranno di nuovo l\'avviso.'],
+    });
+    if (!ok) return;
+    try {
+        await apiDelete('/settings/ui-certificate');
+        showToast('Certificato interno ripristinato', 'success');
+        render(container);
+    } catch (err) { showToast(err.message, 'error', 8000); }
+}
+
 export async function render(container) {
     const s = await apiGet('/settings/system');
     const ro = !checkPermission('manager.manage');
+    const uiCert = await apiGet('/settings/ui-certificate').catch(() => null);
     container.innerHTML = `
         <form id="manager-settings" class="row row-cards">
             ${FIELDS.map(([title, fields]) => `
@@ -82,8 +150,11 @@ export async function render(container) {
                 ${title === 'Notifiche e-mail' && !ro ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="smtp-test">Invia e-mail di prova</button>' : ''}
                 ${title.startsWith('Utenti LDAP') && !ro ? '<button type="button" class="btn btn-outline-secondary btn-sm" id="ldap-test">Prova un login</button>' : ''}
                 </div></div></div>`).join('')}
+            ${uiCertCard(uiCert, ro)}
             ${ro ? '' : '<div class="col-12"><button class="btn btn-primary">Salva</button></div>'}
         </form>`;
+    container.querySelector('#ui-cert-upload')?.addEventListener('click', () => uiCertUpload(container));
+    container.querySelector('#ui-cert-reset')?.addEventListener('click', () => uiCertReset(container));
     container.querySelector('#smtp-test')?.addEventListener('click', async () => {
         try {
             const r = await apiPost('/settings/smtp/test', {});

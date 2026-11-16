@@ -208,6 +208,7 @@ DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
 SECRET_KEY=$SECRET_KEY
 DEBUG=false
 DATA_DIR=$DATA_DIR
+UI_PORT=$UI_PORT
 EOF
 chown -R root:root "$INSTALL_DIR/backend" "$INSTALL_DIR/frontend"
 chown root:"$SERVICE_USER" "$INSTALL_DIR/backend/.env"
@@ -232,6 +233,9 @@ fi
 # for installs older than the CA rotation)
 sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m manager.pki trust-bundle
 CA_FP="$(sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m manager.pki fingerprint)"
+# UI certificate (DATA_DIR/ui-tls): links to the endpoint certificate unless
+# one was installed from Settings, which a reinstall keeps
+sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -m manager.uicert ensure
 cd - >/dev/null
 
 # --- Step 5: nginx ---
@@ -296,8 +300,10 @@ map \$http_upgrade \$connection_upgrade {
 server {
     listen $UI_PORT ssl;
     server_name _;
-    ssl_certificate $DATA_DIR/pki/server.pem;
-    ssl_certificate_key $DATA_DIR/pki/server.key;
+    # Its own certificate (Settings > Certificato della UI), never the agent
+    # server's files directly: see backend/manager/uicert.py
+    ssl_certificate $DATA_DIR/ui-tls/cert.pem;
+    ssl_certificate_key $DATA_DIR/ui-tls/key.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     error_page 497 =301 https://\$host:\$server_port\$request_uri;
@@ -458,7 +464,33 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# The service cannot reload nginx (unprivileged): it writes this file after a
+# UI certificate change and root tests and reloads (backend/manager/uicert.py)
+cat > /etc/systemd/system/madmin-manager-nginx-reload.path << EOF
+[Unit]
+Description=MADMIN Manager: nginx reload request (UI certificate)
+
+[Path]
+PathChanged=$DATA_DIR/ui-tls/reload
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/madmin-manager-nginx-reload.service << 'EOF'
+[Unit]
+Description=MADMIN Manager: test and reload nginx
+# Never rate limited: a refused start would stop the path unit for good
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nginx -t
+ExecStart=/usr/bin/systemctl reload nginx
+EOF
 systemctl daemon-reload
+systemctl enable madmin-manager-nginx-reload.path
+systemctl restart madmin-manager-nginx-reload.path
 systemctl enable madmin-manager.service
 systemctl restart madmin-manager.service
 

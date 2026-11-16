@@ -25,6 +25,15 @@ sudo MADMIN_MANAGER_ADMIN_PASSWORD='...' bash scripts/setup-manager.sh --host ma
 
 Open towards the manager: UI port (operators, filtered), agent port 8443 (instances), support ports 9100–9119 (operators; each session admits one IP).
 
+### Certificates
+
+Two certificates, never mixed:
+
+- **Agent port (8443)**: issued by the manager CA for `--host/--ip` (`DATA_DIR/pki/server.pem`, 825 days). The instances trust that CA only: never put another certificate there. To re-issue (same CA, nothing changes for the instances): rerun the installer, or `python -m manager.pki server-cert --host ... [--ip ...]` as `madmin-manager` in `backend/` and `systemctl reload nginx`.
+- **UI port**: the same certificate by default, so browsers warn. Settings → Certificato della UI installs your own (certificate, key without password, optional CA bundle; PEM; your 2FA code). nginx is reloaded and asked for the certificate it presents: if it is not the new one, the previous comes back. It does not renew by itself: upload the new one before the expiry shown there. A reinstall and a restore keep it.
+
+If a certificate locks you out of the UI: `cd /opt/madmin-manager/backend && sudo -u madmin-manager ../venv/bin/python -m manager.uicert reset && nginx -t && systemctl reload nginx`.
+
 ### Backup and restore
 
 ```bash

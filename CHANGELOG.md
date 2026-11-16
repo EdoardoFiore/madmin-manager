@@ -8,6 +8,16 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.6.0] - 2026-11-16
+
+### Added
+- Certificate of the UI, separate from the agent port's: Settings → Certificato della UI installs an own certificate (certificate, key, optional CA bundle), checked before use (key matches, validity, chain put in order, valid for the name in use), with a fresh 2FA code, and removed again with "Torna a quello interno". `GET/POST/DELETE /api/settings/ui-certificate`. The agent port (8443) keeps the certificate of the manager CA.
+- nginx is reloaded by a root path unit (`madmin-manager-nginx-reload.path`) that the service asks by writing a file; the change is confirmed by reading the certificate nginx presents, otherwise the previous one is put back.
+- `python -m manager.uicert reset` to go back to the internal certificate from the shell.
+
+### Changed
+- **Rerun `setup-manager.sh` to update**: the UI server of nginx now reads `DATA_DIR/ui-tls/` and the reload units are installed by it. `UI_PORT` is written to `.env`.
+
 ## [1.5.0] - 2026-11-15
 
 ### Changed
