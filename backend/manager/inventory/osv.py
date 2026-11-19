@@ -4,18 +4,27 @@ for the OS packages (by source package, ecosystem Ubuntu:<release>[:LTS])
 and the Python advisories (PyPI) for the venv of the release.
 
 Only the manager talks to OSV (it may be the only machine with outbound
-access). Answers are cached: a package version is asked again after
-QUERY_MAX_AGE, an advisory is fetched again when OSV reports it modified.
-An instance is scanned when one of its sections changes (mark_dirty) and every
-instance once a day. The findings of an instance are the advisories that
-affect its packages now; first_seen survives the recomputation.
+access). An instance is scanned when one of its sections changes (mark_dirty),
+and every instance every FULL_INTERVAL and on "Scansiona ora" (request_full).
+The full scans ask OSV again about every package version: the installed
+version of a package does not change when a new CVE is published for it, so a
+cached answer would hide the CVE (the dirty scans reuse answers younger than
+QUERY_MAX_AGE). An advisory is fetched again when OSV reports it modified.
+The findings of an instance are the advisories that affect its packages now;
+first_seen survives the recomputation.
 
 For the OS packages OSV says only "affected" until Ubuntu publishes a fix, so
 the Ubuntu tracker status of each CVE (fix pending, not fixed, deferred, will
-not be fixed, ...) comes from the Canonical VEX documents (ubuntu.py), cached
-like the advisories. A withdrawn advisory, a package Ubuntu marks not affected
-and a fix not newer than the installed version (OSV lagging behind) are not
-findings.
+not be fixed, ...) comes from the Canonical VEX documents (ubuntu.py): fetched
+again when one of the CVE's advisories was modified after the cached copy, and
+anyway after VEX_MAX_AGE. A withdrawn advisory, a package Ubuntu marks not
+affected and a fix not newer than the installed version (OSV lagging behind)
+are not findings.
+
+After a scan, an instance with a fix published by Ubuntu that its own package
+lists do not offer yet (apt-get update not run since) is asked to refresh them
+(os.refresh): its list of updates matches the findings without waiting for
+apt-daily.timer.
 """
 import asyncio
 import json
@@ -38,21 +47,29 @@ logger = logging.getLogger("madmin_manager.osv")
 
 API = "https://api.osv.dev/v1"
 BATCH = 500
-QUERY_MAX_AGE = timedelta(hours=20)
-VEX_MAX_AGE = timedelta(hours=20)
-DAILY = timedelta(hours=24)
+QUERY_MAX_AGE = timedelta(hours=6)    # dirty scans only: full scans always ask again
+VEX_MAX_AGE = timedelta(hours=24)      # also fetched again as soon as an advisory of the CVE changes
+FULL_INTERVAL = timedelta(hours=6)
 LOOP_INTERVAL = 60
 FETCH_CONCURRENCY = 8
 SEVERITIES = ("critical", "high", "medium", "low", "negligible", "unknown")
 
 _dirty: Set[str] = set()
 _last_full: Optional[datetime] = None
+_full_requested = False
 # vex_error: the Ubuntu statuses could not be refreshed (the scan goes on with the cached ones)
 state = {"last_scan_at": None, "last_error": "", "vex_error": "", "running": False}
 
 
 def mark_dirty(instance_id: str) -> None:
     _dirty.add(instance_id)
+
+
+def request_full() -> None:
+    """"Scansiona ora": a full scan at the next loop, with fresh OSV answers
+    (after the one running, if any)."""
+    global _full_requested
+    _full_requested = True
 
 
 def ubuntu_ecosystem(os_id: str) -> Optional[str]:
@@ -185,8 +202,10 @@ def _targets(instance: Instance, inventory: Dict[str, list]) -> List[Tuple[str, 
     return sorted(out)
 
 
-async def _query(client: httpx.AsyncClient, keys: List[Tuple[str, str, str]]) -> Dict[str, list]:
-    """OSV querybatch for package versions not cached (or stale)."""
+async def _query(client: httpx.AsyncClient, keys: List[Tuple[str, str, str]],
+                 max_age: Optional[timedelta] = QUERY_MAX_AGE) -> Dict[str, list]:
+    """OSV querybatch for package versions not cached or older than max_age
+    (None: every one, the cache is only a fallback)."""
     now = datetime.utcnow()
     result: Dict[str, list] = {}
     async with async_session_maker() as session:
@@ -196,7 +215,7 @@ async def _query(client: httpx.AsyncClient, keys: List[Tuple[str, str, str]]) ->
             for row in (await session.execute(select(OsvQuery).where(OsvQuery.key.in_(names[i:i + 1000])))).scalars():
                 cached[row.key] = row
         missing = [(e, n, v) for (e, n, v), k in zip(keys, names)
-                   if k not in cached or now - cached[k].queried_at > QUERY_MAX_AGE]
+                   if k not in cached or max_age is None or now - cached[k].queried_at > max_age]
         for k, row in cached.items():
             result[k] = json.loads(row.vulns_json)
         for i in range(0, len(missing), BATCH):
@@ -272,10 +291,13 @@ async def _advisories(client: httpx.AsyncClient, wanted: Dict[str, str]) -> Dict
     return out
 
 
-async def _vex(client: httpx.AsyncClient, cves: Set[str]) -> Dict[str, dict]:
-    """Ubuntu statuses of these CVEs ({cve: {codename: {source: [status, version]}}}),
-    fetched again after VEX_MAX_AGE. A CVE without a document maps to {}; one that
-    cannot be fetched keeps its cached statuses (or none), and state["vex_error"] says so."""
+async def _vex(client: httpx.AsyncClient, cves: Dict[str, Optional[datetime]]) -> Dict[str, dict]:
+    """Ubuntu statuses of these CVEs ({cve: {codename: {source: [status, version]}}}).
+    `cves` maps each CVE to the last modification of its advisories: the cached
+    statuses are fetched again when an advisory changed after them (Ubuntu
+    published a fix, changed its verdict) and anyway after VEX_MAX_AGE. A CVE
+    without a document maps to {}; one that cannot be fetched keeps its cached
+    statuses (or none), and state["vex_error"] says so."""
     now = datetime.utcnow()
     out: Dict[str, dict] = {}
     cached: Dict[str, UbuntuVex] = {}
@@ -285,7 +307,13 @@ async def _vex(client: httpx.AsyncClient, cves: Set[str]) -> Dict[str, dict]:
             for row in (await session.execute(select(UbuntuVex).where(UbuntuVex.cve.in_(ids[i:i + 1000])))).scalars():
                 cached[row.cve] = row
                 out[row.cve] = json.loads(row.statuses_json)
-    stale = [c for c in sorted(cves) if ubuntu.vex_url(c) and (c not in cached or now - cached[c].fetched_at > VEX_MAX_AGE)]
+    def outdated(c: str) -> bool:
+        row = cached.get(c)
+        if row is None or now - row.fetched_at > VEX_MAX_AGE:
+            return True
+        return cves[c] is not None and cves[c] > row.fetched_at
+
+    stale = [c for c in sorted(cves) if ubuntu.vex_url(c) and outdated(c)]
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
     errors: List[str] = []
 
@@ -351,8 +379,29 @@ def _classify(kind: str, version: str, fixed: str, statuses: Dict[str, list], na
     return status, status_version, fixed, " ".join(alt) if alt else ""
 
 
-async def scan(instance_ids: Optional[List[str]] = None) -> dict:
-    """Recompute the findings of these instances (None = every active one)."""
+def lists_behind(inventory: Dict[str, list], fixes: Dict[str, str]) -> List[str]:
+    """Source packages with a fix published by Ubuntu ({source: fixed version},
+    newer than the installed one) that the instance's list of updates does not
+    offer: its package lists predate the fix. Kernels are left out (a new
+    kernel is a new package, offered through linux-meta, not as an upgrade of
+    the installed one). [] when the instance sends no list of updates."""
+    if not fixes or "upgrades" not in inventory:
+        return []
+    source_of = {f"{p.get('name')}:{p.get('arch')}": p.get("source") or p.get("name")
+                 for p in inventory.get("packages") or []}
+    offered: Dict[str, str] = {}
+    for it in inventory.get("upgrades") or []:
+        src = source_of.get(f"{it.get('name')}:{it.get('arch')}") or it.get("name")
+        cand = str(it.get("candidate") or "")
+        if src and cand and (src not in offered or ubuntu.compare(cand, offered[src]) > 0):
+            offered[src] = cand
+    return sorted(s for s, fixed in fixes.items()
+                  if not s.startswith("linux") and (s not in offered or ubuntu.compare(offered[s], fixed) < 0))
+
+
+async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) -> dict:
+    """Recompute the findings of these instances (None = every active one).
+    fresh: ask OSV about every package version again (full scans)."""
     async with async_session_maker() as session:
         query = select(Instance).where(Instance.status.in_(("active", "suspended")))
         if instance_ids is not None:
@@ -369,7 +418,7 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
     if not keys:
         return {"instances": len(instances), "findings": 0}
     async with httpx.AsyncClient(timeout=60, headers={"User-Agent": "madmin-manager"}) as client:
-        answers = await _query(client, keys)
+        answers = await _query(client, keys, None if fresh else QUERY_MAX_AGE)
         wanted: Dict[str, str] = {}
         for vulns in answers.values():
             for vid, modified in vulns:
@@ -378,7 +427,8 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
         advisories = await _advisories(client, wanted)
         releases = {inst.id: ubuntu.codename(str(json.loads(inst.facts_json or "{}").get("os_id", "")))
                     for inst in instances}
-        cves: Set[str] = set()
+        # CVE -> last modification of its advisories (the VEX copy older than that is fetched again)
+        cves: Dict[str, Optional[datetime]] = {}
         for inst in instances:
             if not releases[inst.id]:
                 continue
@@ -388,16 +438,20 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
                 for vid, _ in answers.get(f"{eco}|{name}|{version}", []):
                     adv = advisories.get(vid)
                     if adv is not None and not adv.withdrawn:
-                        cves.update(json.loads(adv.aliases_json))
+                        for cve in json.loads(adv.aliases_json):
+                            prev = cves.get(cve)
+                            cves[cve] = adv.modified if prev is None or (adv.modified and adv.modified > prev) else prev
         vex = await _vex(client, cves) if cves else {}
     total = 0
     new_critical = []
     reboot_worth = {}   # instance name -> (kernel, critical/high CVEs fixed by the reboot)
+    behind: Dict[str, List[str]] = {}   # instance id -> fixed packages its apt lists do not offer yet
     async with async_session_maker() as session:
         for inst in instances:
             current = {(f.advisory_id, f.package): f for f in (await session.execute(
                 select(Finding).where(Finding.instance_id == inst.id))).scalars()}
             seen = set()
+            fixes: Dict[str, str] = {}   # source package -> newest fixed version published by Ubuntu
             for kind, eco, name, version in targets[inst.id]:
                 for vid, _ in answers.get(f"{eco}|{name}|{version}", []):
                     adv = advisories.get(vid)
@@ -413,6 +467,9 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
                         # the fixed kernel is installed: only the reboot is missing
                         verdict = ("reboot",) + tuple(verdict[1:])
                     seen.add((vid, name))
+                    if kind == "os" and verdict[0] == "fixed" and verdict[2] \
+                            and (name not in fixes or ubuntu.compare(verdict[2], fixes[name]) > 0):
+                        fixes[name] = verdict[2]
                     f = current.get((vid, name))
                     was_fixable = f is not None and bool(f.fixed_version)
                     if f is None:
@@ -433,7 +490,21 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
                 if (vid, name) not in seen:
                     await session.delete(f)
             total += len(seen)
+            missing = lists_behind(inventories[inst.id], fixes)
+            if missing:
+                behind[inst.id] = missing
         await session.commit()
+    if behind:
+        from manager.osactions.service import AUTO_REFRESH_EVERY, refresh_lists
+        async with async_session_maker() as session:
+            for iid, missing in behind.items():
+                inst = await session.get(Instance, iid)
+                try:
+                    if inst is not None and await refresh_lists(session, inst, cooldown=AUTO_REFRESH_EVERY):
+                        logger.info("Instance %s: apt lists behind the published fixes (%s), refreshing",
+                                    inst.name, ", ".join(missing[:10]))
+                except Exception as e:   # the findings are saved: a refresh not queued is retried next scan
+                    logger.warning("Instance %s: apt lists refresh not queued: %s", iid, e)
     if reboot_worth:
         from manager.notify import notify
         for name, (kernel, cves) in reboot_worth.items():
@@ -459,18 +530,20 @@ async def scan(instance_ids: Optional[List[str]] = None) -> dict:
 
 
 async def scan_task() -> None:
-    """Instances whose inventory changed, every minute; everything once a day."""
-    global _last_full
+    """Instances whose inventory changed, every minute; everything every
+    FULL_INTERVAL or when asked (request_full), with fresh OSV answers."""
+    global _last_full, _full_requested
     while True:
         await asyncio.sleep(LOOP_INTERVAL)
-        full = _last_full is None or datetime.utcnow() - _last_full > DAILY
+        full = _full_requested or _last_full is None or datetime.utcnow() - _last_full > FULL_INTERVAL
         if not full and not _dirty:
             continue
+        _full_requested = False
         ids = None if full else sorted(_dirty)
         _dirty.difference_update(ids or list(_dirty))
         state["running"] = True
         try:
-            res = await scan(ids)
+            res = await scan(ids, fresh=full)
             state.update(last_scan_at=datetime.utcnow().isoformat(), last_error="")
             if full:
                 _last_full = datetime.utcnow()
@@ -484,6 +557,6 @@ async def scan_task() -> None:
                 _dirty.update(ids)
             if full:
                 # retried in an hour, not every minute
-                _last_full = datetime.utcnow() - DAILY + timedelta(hours=1)
+                _last_full = datetime.utcnow() - FULL_INTERVAL + timedelta(hours=1)
         finally:
             state["running"] = False

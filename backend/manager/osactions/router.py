@@ -13,7 +13,6 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from core.auth.dependencies import require_permission
 from core.auth.models import User
@@ -22,16 +21,14 @@ from core.database import get_session
 from manager.agents import protocol
 from manager.agents.dispatcher import check_capability, queue_command
 from manager.instances.router import get_instance_or_404
-from manager.models import Command, Instance
+from manager.models import Instance
+from .service import REFRESH_TIMEOUT, REFRESH_TTL, os_command_pending
 
 router = APIRouter(prefix="/api", tags=["OS actions"])
 
-REFRESH_TTL = timedelta(minutes=30)
 UPGRADE_TTL = timedelta(minutes=30)
 UPGRADE_TIMEOUT = 5400
 REBOOT_TTL = timedelta(minutes=10)
-_OS_COMMANDS = (protocol.CMD_OS_REFRESH, protocol.CMD_OS_UPGRADE, protocol.CMD_OS_REBOOT,
-                protocol.CMD_OS_SERVICES_RESTART)
 
 
 async def _target(session, instance_id: str, user: User, name: str) -> Instance:
@@ -41,11 +38,9 @@ async def _target(session, instance_id: str, user: User, name: str) -> Instance:
     if instance.layout < 1:
         raise HTTPException(409, "Installazione senza updater (layout precedente): reinstallare l'istanza")
     check_capability(instance.id, name)
-    pending = (await session.execute(select(Command.name).where(
-        Command.instance_id == instance.id, Command.name.in_(_OS_COMMANDS),
-        Command.status.in_(("queued", "sent", "running"))))).first()
+    pending = await os_command_pending(session, instance.id)
     if pending:
-        raise HTTPException(409, f"Azione sul sistema già in corso ({pending[0]}): attenderne l'esito")
+        raise HTTPException(409, f"Azione sul sistema già in corso ({pending}): attenderne l'esito")
     update = json.loads(instance.update_json or "{}")
     if update.get("result") in ("running", "verifying"):
         raise HTTPException(409, "Aggiornamento di MADMIN in corso")
@@ -57,7 +52,7 @@ async def os_refresh(instance_id: str, session: AsyncSession = Depends(get_sessi
                      user: User = Depends(require_permission("manager.manage"))):
     instance = await _target(session, instance_id, user, protocol.CMD_OS_REFRESH)
     cmd = await queue_command(session, instance.id, protocol.CMD_OS_REFRESH, {}, operator=user.username,
-                              ttl=REFRESH_TTL, timeout=900)
+                              ttl=REFRESH_TTL, timeout=REFRESH_TIMEOUT)
     return {"command_id": cmd.id, "status": cmd.status}
 
 

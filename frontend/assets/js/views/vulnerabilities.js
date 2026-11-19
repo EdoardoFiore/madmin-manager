@@ -169,7 +169,7 @@ function howItWorks() {
                 'Elenco dei pacchetti del sistema e del venv di MADMIN, e gli aggiornamenti disponibili: solo quando cambiano (controllo ogni 5 minuti).',
                 'sull\'istanza')}
             ${step(2, 'ti-shield-search', 'Il manager li confronta',
-                'Con OSV (avvisi Ubuntu e PyPI) e con lo stato del tracker di Ubuntu per ogni CVE: a ogni cambio e una volta al giorno.',
+                'Con OSV (avvisi Ubuntu e PyPI) e con lo stato del tracker di Ubuntu per ogni CVE: a ogni cambio, ogni 6 ore e con «Scansiona ora» (dati sempre riletti da OSV). Se Ubuntu ha pubblicato una correzione che un\'istanza non vede ancora, le sue liste apt vengono aggiornate.',
                 'sul manager, l\'unico che esce su internet')}
             ${step(3, 'ti-list-details', 'Ogni vulnerabilità ha uno stato',
                 '<b class="text-success">Correggibile</b>: la correzione è nei repository · <b>In arrivo</b>: Ubuntu l\'ha preparata · <b>Senza correzione</b>: si aspetta Ubuntu · <b class="text-indigo">Serve release MADMIN</b>: pacchetto Python.',
@@ -282,8 +282,8 @@ registerActions({
     },
     vulnScan: async () => {
         try {
-            await apiPost('/vulnerabilities/scan', {});
-            showToast('Scansione avviata (entro un minuto): i risultati compaiono qui al termine', 'success');
+            const r = await apiPost('/vulnerabilities/scan', {});
+            showToast(`Scansione avviata (entro un minuto)${r.lists_refreshed ? `; liste apt in aggiornamento su ${r.lists_refreshed} istanze` : ''}: i risultati compaiono qui al termine`, 'success');
             scanRequestedAt = Date.now();
             refreshLater(containerEl, '#vulnerabilities', () => render(containerEl));
         }

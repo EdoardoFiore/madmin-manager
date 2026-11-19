@@ -1085,13 +1085,15 @@ async function packages(el, i) {
 
     // 3. Available updates
     const items = up.available ? up.items || [] : [];
+    // The list is as current as the apt lists it is computed from, not as the moment it was computed
+    const aptAge = up.apt_updated_at ? ` · liste apt aggiornate ${relTime(new Date(up.apt_updated_at * 1000).toISOString())}` : '';
     const updBody = !up.available ? '<div class="text-muted small">L\'istanza non invia ancora l\'anteprima: aggiornare MADMIN.</div>'
         : items.length ? `<div class="table-responsive" style="max-height: 20rem; overflow-y: auto"><table class="table table-sm table-vcenter mb-1">
             <thead class="bg-body" style="position: sticky; top: 0; z-index: 1"><tr><th>Tipo</th><th>Pacchetto</th><th>Versione</th><th>Corregge</th><th></th></tr></thead>
             <tbody>${items.map(upgradeRow).join('')}</tbody></table></div>
             <div class="small text-muted">${Object.values(UP_TONE).map(([cls, label, title]) => `<span class="badge ${cls}" title="${escapeHtml(title)}">${label}</span>`).join(' ')}
-                · calcolati sull'istanza ${relTime(up.updated_at)}</div>`
-        : '<div class="text-muted small">Nessun aggiornamento disponibile.</div>';
+                · calcolati sull'istanza ${relTime(up.updated_at)}${aptAge}</div>`
+        : `<div class="text-muted small">Nessun aggiornamento disponibile${aptAge}.</div>`;
 
     // 4. Details of the system
     const sysBody = kv([

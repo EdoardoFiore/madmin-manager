@@ -452,9 +452,16 @@ async def export_csv(group_id: Optional[str] = Query(default=None, max_length=36
 @router.post("/vulnerabilities/scan")
 async def scan_now(session: AsyncSession = Depends(get_session),
                    user: User = Depends(require_permission("manager.manage"))):
-    if osv.state.get("running"):
-        raise HTTPException(409, "Scansione già in corso")
-    instances = (await session.execute(select(Instance.id).where(Instance.status.in_(("active", "suspended"))))).all()
-    for (iid,) in instances:
-        osv.mark_dirty(iid)
-    return {"queued": len(instances)}
+    """A full scan at the next minute (after the one running, if any) with
+    fresh data: OSV is asked again about every package version, not answered
+    from the cache. The connected instances whose package lists are older than
+    an hour refresh them too (os.refresh), so that their list of updates is
+    current as well; the scan that follows their new list sees it."""
+    from manager.osactions.service import refresh_lists
+    instances = (await session.execute(select(Instance).where(
+        Instance.status.in_(("active", "suspended"))))).scalars().all()
+    refreshed = 0
+    for inst in instances:
+        refreshed += await refresh_lists(session, inst, operator=user.username)
+    osv.request_full()
+    return {"queued": len(instances), "lists_refreshed": refreshed, "running": bool(osv.state.get("running"))}
