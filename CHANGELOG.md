@@ -8,6 +8,12 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.12.1] - 2026-11-19
+
+### Fixed
+- Vulnerabilities: a CVE published for a package version already installed stayed invisible for up to a day, even after "Scansiona ora". The installed version does not change, and the OSV answer for it was reused for 20 hours. Every full scan (now every 6 hours instead of daily) and "Scansiona ora" now ask OSV again about every package version. The scans after an inventory change reuse answers younger than 6 hours. The Ubuntu status of a CVE (VEX) is fetched again as soon as one of its advisories changes (fix published, verdict changed), and anyway after 24 hours.
+- Updates of an instance: the list is computed from the instance's apt lists, refreshed by Ubuntu twice a day. A security fix already published by Ubuntu could be missing from the list, and from the automatic updates, for hours. "Aggiorna dati" re-reads the list, but does not refresh the apt lists. Now, when the manager sees a fix published by Ubuntu that the instance does not offer yet, it refreshes that instance's apt lists (`os.refresh`, at most once every 6 hours per instance). "Scansiona ora" also refreshes the lists older than an hour on the connected instances. The tab Sistema shows how old the apt lists are next to the list of updates.
+
 ## [1.12.0] - 2026-11-17
 
 ### Fixed
