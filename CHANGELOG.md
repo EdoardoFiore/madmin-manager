@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.12.3] - 2026-11-19
+
+### Fixed
+- Instance, tab Sistema: an instance whose package lists are not refreshed by themselves (`apt-daily.timer` stopped or `APT::Periodic::Update-Package-Lists` off) never sees a new fix, and nothing said so. It is now shown as an alert, and the tile "Automatici" reads "Non attivi". The same applies when the automatic security updates are off (`unattended_upgrades`). Needs MADMIN 1.4.4 for `os_status.apt_lists_refresh`.
+
 ## [1.12.2] - 2026-11-19
 
 ### Fixed
