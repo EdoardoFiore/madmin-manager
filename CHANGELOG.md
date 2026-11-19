@@ -8,6 +8,12 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.12.4] - 2026-11-19
+
+### Fixed
+- Instance, tab Sistema: after "Installa sicurezza" the vulnerabilities fixed by the upgrade stayed listed as "da correggere" until the page was reloaded. The page redrew when the commands ended, but the scan of the new packages ran up to a minute later and was not watched. The page now also follows the scan of the instance (`GET /api/instances/{id}/scan-state`) and redraws when it ends. Until then it says "Ricalcolo in corso", from the end of the upgrade (result hook on `os.upgrade`) to the scan of the new packages. An instance whose packages changed is scanned within 15 seconds (was 60).
+- Vulnerabilities: after installing a fix the security feed did not know yet (it lags hours behind the Ubuntu tracker), the finding stayed listed as "stale" (Ubuntu assessed an older version). For those CVEs the live tracker is asked too (at most every 6 hours per CVE): a fix not newer than the installed version drops the finding.
+
 ## [1.12.3] - 2026-11-19
 
 ### Fixed
