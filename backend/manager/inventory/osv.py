@@ -54,13 +54,16 @@ BATCH = 500
 QUERY_MAX_AGE = timedelta(hours=6)    # dirty scans only: full scans always ask again
 VEX_MAX_AGE = timedelta(hours=24)      # also fetched again as soon as an advisory of the CVE changes
 FULL_INTERVAL = timedelta(hours=6)
-LOOP_INTERVAL = 60
+LOOP_INTERVAL = 15   # an instance whose packages changed (an upgrade) is scanned within this
 FETCH_CONCURRENCY = 8
 SEVERITIES = ("critical", "high", "medium", "low", "negligible", "unknown")
 
-TRACKER_MAX_AGE = timedelta(hours=1)
+TRACKER_MAX_AGE = timedelta(hours=1)         # CVEs of a package with a security update offered
+TRACKER_STALE_MAX_AGE = timedelta(hours=6)   # CVEs Ubuntu assessed on an older version than the installed one
 
 _dirty: Set[str] = set()
+_scanning: Set[str] = set()                  # instances in the scan running now
+_scanned_at: Dict[str, datetime] = {}        # instance -> end of its last scan
 _last_full: Optional[datetime] = None
 _full_requested = False
 _tracker_cache: Dict[str, Tuple[datetime, dict]] = {}   # cve -> (fetched, live tracker statuses)
@@ -70,6 +73,32 @@ state = {"last_scan_at": None, "last_error": "", "vex_error": "", "running": Fal
 
 def mark_dirty(instance_id: str) -> None:
     _dirty.add(instance_id)
+
+
+EXPECT_MAX = timedelta(minutes=5)
+_expected: Dict[str, datetime] = {}          # instance -> an upgrade finished, its new packages not here yet
+
+
+def expect_change(instance_id: str) -> None:
+    """An upgrade finished on the instance: its packages are about to change
+    (they arrive with the next facts, within a heartbeat)."""
+    _expected[instance_id] = datetime.utcnow()
+
+
+def change_arrived(instance_id: str) -> None:
+    """The packages after the upgrade arrived (or the facts say they did not change)."""
+    _expected.pop(instance_id, None)
+
+
+def scan_state(instance_id: str) -> dict:
+    """pending: the findings of the instance are about to be recomputed (an
+    upgrade finished, its packages changed, or a full scan is asked or
+    running); scanned_at: when they last were (ISO, UTC)."""
+    at = _scanned_at.get(instance_id)
+    exp = _expected.get(instance_id)
+    waiting = exp is not None and datetime.utcnow() - exp < EXPECT_MAX
+    return {"pending": waiting or instance_id in _dirty or instance_id in _scanning or _full_requested,
+            "scanned_at": at.isoformat() if at else None}
 
 
 def request_full() -> None:
@@ -371,39 +400,51 @@ def security_offered(inventory: Dict[str, list]) -> Dict[str, str]:
     return out
 
 
-def _lagging(instances, targets, answers, advisories, vex, releases, inventories) -> Set[str]:
-    """CVEs the security data may be behind on: Ubuntu says not fixed (or
-    nothing) for a package the instance is offered a security update of. The
-    update probably is the fix, published before OSV and VEX caught up."""
-    out: Set[str] = set()
+def _lagging(instances, targets, answers, advisories, vex, releases, inventories) -> Tuple[Set[str], Set[str]]:
+    """CVEs the security data may be behind on, where Ubuntu says not fixed
+    (or nothing):
+    - offered: for a package the instance is offered a security update of.
+      The update probably is the fix, published before OSV and VEX caught up;
+    - stale: Ubuntu assessed an older version than the installed one. The
+      instance probably installed the fix (an upgrade), which the feed does
+      not know yet: without the tracker the finding would stay listed."""
+    offered_cves: Set[str] = set()
+    stale_cves: Set[str] = set()
     for inst in instances:
         rel = releases[inst.id]
-        offered = security_offered(inventories[inst.id]) if rel else {}
-        if not offered:
+        if not rel:
             continue
+        offered = security_offered(inventories[inst.id])
         for kind, eco, name, version in targets[inst.id]:
-            if kind != "os" or name not in offered or ubuntu.compare(offered[name], version) <= 0:
+            if kind != "os":
                 continue
+            has_update = name in offered and ubuntu.compare(offered[name], version) > 0
             for vid, _ in answers.get(f"{eco}|{name}|{version}", []):
                 adv = advisories.get(vid)
                 if adv is None or adv.withdrawn:
                     continue
-                status = (_ubuntu_status(adv, vex, rel).get(name) or [""])[0]
-                if status not in ("fixed", "esm", "not-affected"):
-                    out.update(c for c in json.loads(adv.aliases_json) if c.startswith("CVE-"))
-    return out
+                status, assessed = ((_ubuntu_status(adv, vex, rel).get(name) or []) + ["", ""])[:2]
+                if status in ("fixed", "esm", "not-affected"):
+                    continue
+                cves = [c for c in json.loads(adv.aliases_json) if c.startswith("CVE-")]
+                if has_update:
+                    offered_cves.update(cves)
+                elif assessed and ubuntu.compare(version, assessed) > 0:
+                    stale_cves.update(cves)
+    return offered_cves, stale_cves - offered_cves
 
 
-async def _tracker(client: httpx.AsyncClient, cves: Set[str]) -> Dict[str, dict]:
-    """Live tracker statuses of these CVEs, asked at most every TRACKER_MAX_AGE
-    (in memory: after a restart they are asked again). A CVE that cannot be
+async def _tracker(client: httpx.AsyncClient, cves: Set[str],
+                   max_age: timedelta = TRACKER_MAX_AGE) -> Dict[str, dict]:
+    """Live tracker statuses of these CVEs, asked at most every max_age (in
+    memory: after a restart they are asked again). A CVE that cannot be
     fetched is left out (the VEX statuses stay)."""
     now = datetime.utcnow()
     out: Dict[str, dict] = {}
     todo = []
     for c in sorted(cves):
         hit = _tracker_cache.get(c)
-        if hit and now - hit[0] < TRACKER_MAX_AGE:
+        if hit and now - hit[0] < max_age:
             out[c] = hit[1]
         elif ubuntu.tracker_url(c):
             todo.append(c)
@@ -500,10 +541,12 @@ async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) ->
             rows = (await session.execute(select(InstanceInventory).where(
                 InstanceInventory.instance_id == inst.id))).scalars().all()
             inventories[inst.id] = {r.section: json.loads(r.items_json) for r in rows if r.digest}
+    _scanning.update(inst.id for inst in instances)   # cleared by scan_task
     targets = {inst.id: _targets(inst, inventories[inst.id]) for inst in instances}
     kernels = {inst.id: installed_kernel_versions(inventories[inst.id]) for inst in instances}
     keys = sorted({(e, n, v) for t in targets.values() for _, e, n, v in t})
     if not keys:
+        _scanned_at.update({inst.id: datetime.utcnow() for inst in instances})
         return {"instances": len(instances), "findings": 0}
     async with httpx.AsyncClient(timeout=60, headers={"User-Agent": "madmin-manager"}) as client:
         answers = await _query(client, keys, None if fresh else QUERY_MAX_AGE)
@@ -530,11 +573,12 @@ async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) ->
                             prev = cves.get(cve)
                             cves[cve] = adv.modified if prev is None or (adv.modified and adv.modified > prev) else prev
         vex = await _vex(client, cves) if cves else {}
-        lagging = _lagging(instances, targets, answers, advisories, vex, releases, inventories)
-        if lagging:
+        offered_cves, stale_cves = _lagging(instances, targets, answers, advisories, vex, releases, inventories)
+        if offered_cves or stale_cves:
             # copies: the cached VEX dicts are not changed by the merge
             vex = {c: {r: dict(p) for r, p in s.items()} for c, s in vex.items()}
-            _merge_tracker(vex, await _tracker(client, lagging))
+            _merge_tracker(vex, await _tracker(client, offered_cves))
+            _merge_tracker(vex, await _tracker(client, stale_cves, TRACKER_STALE_MAX_AGE))
     total = 0
     new_critical = []
     reboot_worth = {}   # instance name -> (kernel, critical/high CVEs fixed by the reboot)
@@ -587,6 +631,7 @@ async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) ->
             if missing:
                 behind[inst.id] = missing
         await session.commit()
+    _scanned_at.update({inst.id: datetime.utcnow() for inst in instances})
     if behind:
         from manager.osactions.service import AUTO_REFRESH_EVERY, refresh_lists
         async with async_session_maker() as session:
@@ -623,7 +668,7 @@ async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) ->
 
 
 async def scan_task() -> None:
-    """Instances whose inventory changed, every minute; everything every
+    """Instances whose inventory changed, every LOOP_INTERVAL; everything every
     FULL_INTERVAL or when asked (request_full), with fresh OSV answers."""
     global _last_full, _full_requested
     while True:
@@ -653,3 +698,4 @@ async def scan_task() -> None:
                 _last_full = datetime.utcnow() - FULL_INTERVAL + timedelta(hours=1)
         finally:
             state["running"] = False
+            _scanning.clear()

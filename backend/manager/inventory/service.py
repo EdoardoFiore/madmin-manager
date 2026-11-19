@@ -57,6 +57,9 @@ async def sections_announced(session, instance_id: str, sections) -> None:
             continue
         row = await session.get(InstanceInventory, (instance_id, name))
         if row is not None and row.digest == digest:
+            if name == "packages":
+                from . import osv
+                osv.change_arrived(instance_id)   # an upgrade that changed nothing
             if row.wanted_digest:
                 row.wanted_digest = ""
                 session.add(row)
@@ -107,6 +110,8 @@ async def _on_inventory_get(instance_id: str, data: dict) -> dict:
     if name in HISTORY_SECTIONS:
         from . import osv
         osv.mark_dirty(instance_id)
+        if name == "packages":
+            osv.change_arrived(instance_id)
     logger.info("Inventory %s of %s: %d items, %d changes", name, instance_id, len(items), len(changes))
     return {"section": name, "digest": digest, "count": len(items), "changes": len(changes)}
 
@@ -124,6 +129,17 @@ async def _prune_changes(session, instance_id: str, section: str) -> None:
 
 
 RESULT_HOOKS[protocol.CMD_INVENTORY_GET] = _on_inventory_get
+
+
+async def _on_os_upgrade(instance_id: str, data: dict) -> dict:
+    """Result hook: the findings are about to change (the instance page says
+    so until the new packages are scanned); the result is kept as it is."""
+    from . import osv
+    osv.expect_change(instance_id)
+    return data
+
+
+RESULT_HOOKS[protocol.CMD_OS_UPGRADE] = _on_os_upgrade
 
 
 async def section_items(session, instance_id: str, section: str) -> Optional[list]:

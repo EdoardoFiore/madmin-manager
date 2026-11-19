@@ -155,8 +155,28 @@ async def instance_inventory(instance_id: str, session: AsyncSession = Depends(g
         "restart_services": (facts.get("os_status") or {}).get("restart_services") or [],
         "autoupdate": (facts.get("os_status") or {}).get("autoupdate"),
         "release": ubuntu.codename(str(facts.get("os_id") or "")),
-        "scan_at": osv.state.get("last_scan_at"),
+        **_scan_state(instance.id, rows),
     }
+
+
+def _scan_state(instance_id: str, rows) -> dict:
+    """scan_pending: the findings shown are about to change (a section being
+    fetched after a change on the instance, or the scan of it pending or
+    running): the page says so instead of showing the old ones as current."""
+    st = osv.scan_state(instance_id)
+    fetching = any(r.wanted_digest for r in rows if r.section in ("packages", "upgrades"))
+    return {"scan_pending": st["pending"] or fetching,
+            "scan_at": st["scanned_at"] or osv.state.get("last_scan_at")}
+
+
+@router.get("/instances/{instance_id}/scan-state")
+async def instance_scan_state(instance_id: str, session: AsyncSession = Depends(get_session),
+                              user: User = Depends(require_permission("scope.view"))):
+    """Cheap, polled by the instance page to redraw when the findings change."""
+    instance = await scope.get_instance(session, user, instance_id)
+    rows = (await session.execute(select(InstanceInventory).where(
+        InstanceInventory.instance_id == instance.id))).scalars().all()
+    return _scan_state(instance.id, rows)
 
 
 @router.get("/instances/{instance_id}/inventory/changes")

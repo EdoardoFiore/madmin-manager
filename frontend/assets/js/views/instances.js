@@ -581,12 +581,18 @@ function watchCommands(id) {
                 || !location.hash.startsWith(`#instances/${id}`)) return;
         let busy = false;
         try {
-            const cmds = await apiGet(`/instances/${encodeURIComponent(id)}/commands?limit=15`);
-            busy = cmds.some(c => ACTIVE.has(c.status));
+            // The vulnerability scan is not a command: after an upgrade the findings change
+            // a little after the commands are done, and the tab is redrawn then too
+            const [cmds, scan] = await Promise.all([
+                apiGet(`/instances/${encodeURIComponent(id)}/commands?limit=15`),
+                apiGet(`/instances/${encodeURIComponent(id)}/scan-state`).catch(() => null),
+            ]);
+            busy = cmds.some(c => ACTIVE.has(c.status)) || !!scan?.scan_pending;
             // Progress only redraws the tabs that show it; the others wait for a state change
             const progress = ['overview', 'commands'].includes(currentTab);
-            const sig = JSON.stringify(cmds.map(c => [c.id, c.status,
-                progress ? [c.progress?.percent ?? null, c.progress?.step ?? null] : null]));
+            const sig = JSON.stringify([cmds.map(c => [c.id, c.status,
+                progress ? [c.progress?.percent ?? null, c.progress?.step ?? null] : null]),
+                scan ? [scan.scan_pending, scan.scan_at] : null]);
             if (last !== null && sig !== last) dirty = true;
             last = sig;
             const typing = mainEl.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
@@ -1012,7 +1018,11 @@ async function packages(el, i) {
         <td>${statusCell(f)}</td></tr>`;
 
     // 1. State at a glance
-    const vulnTile = toFix
+    const vulnTile = inv.scan_pending
+        ? stateTile('ti-loader-2', 'Vulnerabilità', 'Ricalcolo in corso', 'muted',
+            'i pacchetti sono cambiati: tra poco i dati aggiornati',
+            'Dopo un aggiornamento o un cambio dei pacchetti le vulnerabilità vengono ricalcolate (meno di un minuto)')
+        : toFix
         ? stateTile('ti-shield-x', 'Vulnerabilità', `${toFix} da correggere`, 'danger',
             [inv.fixable_os ? `${inv.fixable_os} con gli aggiornamenti` : '', inv.fixable_release ? `${inv.fixable_release} con una release MADMIN` : ''].filter(Boolean).join(' · '))
         : stateTile('ti-shield-check', 'Vulnerabilità', 'Niente da correggere', 'ok',
@@ -1073,6 +1083,8 @@ async function packages(el, i) {
     // 2. Vulnerabilities: only what can be fixed in full, the rest on demand
     const kf = inv.kernel_fix;
     const vulnBody = `
+        ${inv.scan_pending ? `<div class="alert alert-info py-2 small mb-2"><span class="spinner-border spinner-border-sm me-2"></span>Ricalcolo in corso dopo il cambio dei pacchetti:
+            l'elenco sotto è quello precedente e si aggiorna da solo.</div>` : ''}
         ${total ? `<div class="small mb-2"><span class="text-muted">Note:</span> ${sevBadges(inv.findings)}
             <a href="#vulnerabilities" class="ms-2">tutte le istanze</a></div>` : '<div class="text-muted">Nessuna vulnerabilità nota.</div>'}
         ${fixable.length ? `<div class="table-responsive" style="max-height: 18rem; overflow-y: auto"><table class="table table-sm table-vcenter mb-2">
