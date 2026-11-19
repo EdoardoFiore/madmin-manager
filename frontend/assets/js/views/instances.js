@@ -1031,7 +1031,11 @@ async function packages(el, i) {
             'Sicurezza = quelli che installano anche gli aggiornamenti automatici; «in tutto» comprende gli aggiornamenti normali')
         : stateTile('ti-package', 'Aggiornamenti', st.pending_updates == null ? '-' : `${st.pending_security || 0} di sicurezza`, 'muted',
             'anteprima non disponibile (aggiornare MADMIN)');
-    const autoTile = stateTile('ti-clock-play', 'Automatici', au.time ? `ogni notte ${escapeHtml(au.time)}` : 'orario Ubuntu', 'muted',
+    const autoTile = st.unattended_upgrades === false || st.apt_lists_refresh === false
+        ? stateTile('ti-clock-play', 'Automatici', 'Non attivi', 'danger',
+            st.unattended_upgrades === false ? 'installazione disattivata' : 'liste apt non aggiornate',
+            'Gli aggiornamenti di sicurezza automatici non funzionano su questa istanza: vedere l\'avviso sotto.')
+        : stateTile('ti-clock-play', 'Automatici', au.time ? `ogni notte ${escapeHtml(au.time)}` : 'orario Ubuntu', 'muted',
         `solo sicurezza${au.next_run ? ` · prossimo ${ts(au.next_run)}` : ''}`,
         'Ogni giorno installano solo gli aggiornamenti di sicurezza della versione di Ubuntu installata (versioni corrette degli stessi pacchetti: mai gli aggiornamenti normali, mai un\'altra versione di Ubuntu), poi riavviano i servizi che li usano (pochi secondi). La macchina non si riavvia mai da sola. Ora per gruppo o in Impostazioni.');
 
@@ -1053,7 +1057,13 @@ async function packages(el, i) {
         : rb.recommended && !st.reboot_scheduled_at ? `<button class="btn btn-sm btn-warning" ${actionAttrs('managerOsReboot')}><i class="ti ti-power me-1"></i>Programma riavvio</button>`
         : svc.length ? `<button class="btn btn-sm btn-outline-warning" ${actionAttrs('managerServicesRestart')}><i class="ti ti-refresh-dot me-1"></i>Riavvia servizi (${svc.length})</button>` : '';
 
+    // false only from MADMIN 1.4.4 on (older instances do not send apt_lists_refresh)
     const alerts = [
+        st.apt_lists_refresh === false ? `<div class="alert alert-danger py-2 small mb-2"><i class="ti ti-alert-triangle me-1"></i><b>Liste apt non aggiornate automaticamente</b>
+            (apt-daily.timer fermo o <span class="font-monospace">APT::Periodic::Update-Package-Lists</span> disattivato): nuove correzioni di sicurezza non vengono viste
+            né installate. Si possono aggiornare a mano con Azioni › Ricontrolla ora.</div>` : '',
+        st.unattended_upgrades === false ? `<div class="alert alert-warning py-2 small mb-2"><i class="ti ti-shield-off me-1"></i><b>Aggiornamenti di sicurezza automatici disattivati</b>
+            (apt-daily-upgrade.timer fermo, unattended-upgrades assente o disattivato): si installano solo dal manager.</div>` : '',
         svc.length ? `<div class="alert alert-warning py-2 small mb-2"><i class="ti ti-refresh-dot me-1"></i><b>${svc.length} servizi</b> usano librerie vecchie:
             ${svc.map(x => `<span class="font-monospace">${escapeHtml(x.replace(/\.service$/, ''))}</span>`).join(', ')}</div>` : '',
         trial && trial.result !== 'confirmed' ? `<div class="alert ${trial.result === 'failed' ? 'alert-danger' : 'alert-warning'} py-2 small mb-2">
