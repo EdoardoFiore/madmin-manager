@@ -8,6 +8,11 @@ All notable changes to MADMIN Manager. Versions follow [Semantic Versioning](htt
 
 Every block of work that is pushed bumps the version (`MANAGER_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. The manager is updated by rerunning `setup-manager.sh` from a checkout of the version (schema steps run at startup). The wire protocol has its own versioning (`docs/PROTOCOL.md`), the MADMIN instances theirs (MADMIN `CHANGELOG.md`).
 
+## [1.12.2] - 2026-11-19
+
+### Fixed
+- Vulnerabilities: a CVE whose fix Ubuntu had already published was shown as "Senza correzione", and the update did not list it under "Corregge". OSV and the VEX documents come from the same Canonical feed, which lags hours behind the live Ubuntu tracker. Example: nginx 1.24.0-2ubuntu7.20 was in noble-security with USN-9159-1 while both still said "needed" for CVE-2026-123007. Now, when an instance is offered a security update for a package whose CVEs still look unfixed, the manager asks the live tracker (`ubuntu.com/security/cves/<cve>.json`, at most once an hour per CVE) and its verdict wins. Only those CVEs are asked, not the whole feed.
+
 ## [1.12.1] - 2026-11-19
 
 ### Fixed
