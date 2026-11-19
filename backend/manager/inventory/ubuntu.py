@@ -27,8 +27,12 @@ The manager adds three of its own:
     stale         Ubuntu assessed an older version than the installed one: the
                   data lag behind a security update (the finding is probably fixed)
 
-Both OSV and VEX lag a few days behind the tracker: a 'fixed' version that is
-not newer than the installed one drops the finding.
+Both OSV and VEX lag behind the tracker (hours, sometimes days: on
+2026-11-19 nginx 1.24.0-2ubuntu7.20 was in noble-security with its USN while
+both still said "needed"): a 'fixed' version that is not newer than the
+installed one drops the finding. Where the lag matters, a security update
+offered by the instance for a package whose CVEs still look unfixed, the
+live tracker is asked (TRACKER_URL, parse_tracker).
 
 Pure functions only: fetching and caching are in osv.py.
 """
@@ -36,6 +40,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 VEX_URL = "https://raw.githubusercontent.com/canonical/ubuntu-security-notices/main/vex/cve/{year}/{cve}.json"
+TRACKER_URL = "https://ubuntu.com/security/cves/{cve}.json"
 
 # os_id version -> codename used in the VEX purls (distro=<codename>)
 CODENAMES = {
@@ -61,6 +66,44 @@ def codename(os_id: str) -> Optional[str]:
 def vex_url(cve: str) -> Optional[str]:
     m = _CVE_RE.match(cve)
     return VEX_URL.format(year=m.group(1), cve=cve) if m else None
+
+
+def tracker_url(cve: str) -> Optional[str]:
+    return TRACKER_URL.format(cve=cve) if _CVE_RE.match(cve) else None
+
+
+# Tracker statuses (ubuntu.com/security/cves/<cve>.json) -> ours; DNE = not in the release
+_TRACKER_STATUS = {"needed": "needed", "needs-triage": "triage", "deferred": "deferred",
+                   "pending": "pending", "not-affected": "not-affected"}
+
+
+def parse_tracker(doc: dict) -> Dict[str, Dict[str, List[str]]]:
+    """The live tracker's record of a CVE, in the shape of parse():
+    {codename: {source package: [status, version]}}. 'released' is fixed in
+    the archive (pocket security/updates) or esm (Ubuntu Pro pockets: esm-*,
+    fips*, realtime); the version is the fixed one for fixed/esm, else empty
+    (the tracker gives no assessed version, so no 'stale' from it)."""
+    wanted = set(CODENAMES.values())
+    out: Dict[str, Dict[str, List[str]]] = {}
+    for pkg in doc.get("packages") or []:
+        name = str(pkg.get("name") or "")
+        for st in pkg.get("statuses") or []:
+            rel = st.get("release_codename")
+            if not name or rel not in wanted:
+                continue
+            raw = str(st.get("status") or "")
+            desc = str(st.get("description") or "")
+            if raw == "released":
+                status = "fixed" if st.get("pocket") in ("security", "updates", None, "") else "esm"
+            elif raw == "ignored":
+                status = "eol" if "end of" in desc.lower() else "ignored"
+            else:
+                status = _TRACKER_STATUS.get(raw, "")
+            if not status:
+                continue
+            version = desc if status in ("fixed", "esm") else ""
+            out.setdefault(rel, {})[name] = [status, version]
+    return out
 
 
 def _status(statement: dict) -> str:

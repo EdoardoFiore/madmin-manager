@@ -17,7 +17,11 @@ For the OS packages OSV says only "affected" until Ubuntu publishes a fix, so
 the Ubuntu tracker status of each CVE (fix pending, not fixed, deferred, will
 not be fixed, ...) comes from the Canonical VEX documents (ubuntu.py): fetched
 again when one of the CVE's advisories was modified after the cached copy, and
-anyway after VEX_MAX_AGE. A withdrawn advisory, a package Ubuntu marks not
+anyway after VEX_MAX_AGE. OSV and VEX come from the same feed, which lags
+behind the live tracker by hours: for a package the instance is offered a
+security update of while its CVEs still look unfixed, the live tracker
+(ubuntu.com/security/cves/<cve>.json) is asked and its verdict wins
+(_lagging, _tracker). A withdrawn advisory, a package Ubuntu marks not
 affected and a fix not newer than the installed version (OSV lagging behind)
 are not findings.
 
@@ -54,9 +58,12 @@ LOOP_INTERVAL = 60
 FETCH_CONCURRENCY = 8
 SEVERITIES = ("critical", "high", "medium", "low", "negligible", "unknown")
 
+TRACKER_MAX_AGE = timedelta(hours=1)
+
 _dirty: Set[str] = set()
 _last_full: Optional[datetime] = None
 _full_requested = False
+_tracker_cache: Dict[str, Tuple[datetime, dict]] = {}   # cve -> (fetched, live tracker statuses)
 # vex_error: the Ubuntu statuses could not be refreshed (the scan goes on with the cached ones)
 state = {"last_scan_at": None, "last_error": "", "vex_error": "", "running": False}
 
@@ -348,6 +355,87 @@ async def _vex(client: httpx.AsyncClient, cves: Dict[str, Optional[datetime]]) -
     return out
 
 
+def security_offered(inventory: Dict[str, list]) -> Dict[str, str]:
+    """{source package: newest version the instance's security updates would
+    install} (its upgrades section)."""
+    source_of = {f"{p.get('name')}:{p.get('arch')}": p.get("source") or p.get("name")
+                 for p in inventory.get("packages") or []}
+    out: Dict[str, str] = {}
+    for it in inventory.get("upgrades") or []:
+        sv = str(it.get("security_version") or "")
+        if not it.get("security") or not sv:
+            continue
+        src = source_of.get(f"{it.get('name')}:{it.get('arch')}") or it.get("name")
+        if src and (src not in out or ubuntu.compare(sv, out[src]) > 0):
+            out[src] = sv
+    return out
+
+
+def _lagging(instances, targets, answers, advisories, vex, releases, inventories) -> Set[str]:
+    """CVEs the security data may be behind on: Ubuntu says not fixed (or
+    nothing) for a package the instance is offered a security update of. The
+    update probably is the fix, published before OSV and VEX caught up."""
+    out: Set[str] = set()
+    for inst in instances:
+        rel = releases[inst.id]
+        offered = security_offered(inventories[inst.id]) if rel else {}
+        if not offered:
+            continue
+        for kind, eco, name, version in targets[inst.id]:
+            if kind != "os" or name not in offered or ubuntu.compare(offered[name], version) <= 0:
+                continue
+            for vid, _ in answers.get(f"{eco}|{name}|{version}", []):
+                adv = advisories.get(vid)
+                if adv is None or adv.withdrawn:
+                    continue
+                status = (_ubuntu_status(adv, vex, rel).get(name) or [""])[0]
+                if status not in ("fixed", "esm", "not-affected"):
+                    out.update(c for c in json.loads(adv.aliases_json) if c.startswith("CVE-"))
+    return out
+
+
+async def _tracker(client: httpx.AsyncClient, cves: Set[str]) -> Dict[str, dict]:
+    """Live tracker statuses of these CVEs, asked at most every TRACKER_MAX_AGE
+    (in memory: after a restart they are asked again). A CVE that cannot be
+    fetched is left out (the VEX statuses stay)."""
+    now = datetime.utcnow()
+    out: Dict[str, dict] = {}
+    todo = []
+    for c in sorted(cves):
+        hit = _tracker_cache.get(c)
+        if hit and now - hit[0] < TRACKER_MAX_AGE:
+            out[c] = hit[1]
+        elif ubuntu.tracker_url(c):
+            todo.append(c)
+    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+    async def fetch(cve: str) -> Optional[dict]:
+        async with sem:
+            try:
+                r = await client.get(ubuntu.tracker_url(cve))
+                if r.status_code == 404:
+                    return {}
+                r.raise_for_status()
+                return ubuntu.parse_tracker(r.json())
+            except (httpx.HTTPError, ValueError) as e:
+                logger.warning("Ubuntu tracker: %s not fetched: %s", cve, e)
+                return None
+
+    for cve, statuses in zip(todo, await asyncio.gather(*(fetch(c) for c in todo))):
+        if statuses is not None:
+            _tracker_cache[cve] = (now, statuses)
+            out[cve] = statuses
+    return out
+
+
+def _merge_tracker(vex: Dict[str, dict], tracker: Dict[str, dict]) -> None:
+    """The tracker's verdict wins over the VEX copy, per release and package."""
+    for cve, rels in tracker.items():
+        target = vex.setdefault(cve, {})
+        for rel, pkgs in rels.items():
+            target.setdefault(rel, {}).update(pkgs)
+
+
 def _ubuntu_status(adv: Advisory, vex: Dict[str, dict], release: str) -> Dict[str, list]:
     """Statuses of the release for the first CVE of the advisory that has some."""
     for cve in json.loads(adv.aliases_json):
@@ -442,6 +530,11 @@ async def scan(instance_ids: Optional[List[str]] = None, fresh: bool = False) ->
                             prev = cves.get(cve)
                             cves[cve] = adv.modified if prev is None or (adv.modified and adv.modified > prev) else prev
         vex = await _vex(client, cves) if cves else {}
+        lagging = _lagging(instances, targets, answers, advisories, vex, releases, inventories)
+        if lagging:
+            # copies: the cached VEX dicts are not changed by the merge
+            vex = {c: {r: dict(p) for r, p in s.items()} for c, s in vex.items()}
+            _merge_tracker(vex, await _tracker(client, lagging))
     total = 0
     new_critical = []
     reboot_worth = {}   # instance name -> (kernel, critical/high CVEs fixed by the reboot)
